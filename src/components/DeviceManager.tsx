@@ -14,7 +14,8 @@ import {
   Trash2, 
   MapPin, 
   ShieldAlert,
-  Server
+  Server,
+  Edit
 } from "lucide-react";
 
 interface DeviceManagerProps {
@@ -22,10 +23,12 @@ interface DeviceManagerProps {
   onToggleControl: (id: string, controlType: "siren" | "light" | "recording") => void;
   onAddDevice: (device: Omit<Device, "id" | "status" | "lastActive">) => void;
   onRemoveDevice: (id: string) => void;
+  onUpdateDevice: (id: string, updatedFields: Partial<Device>) => void;
   onToggleDemoMode: () => void;
   isDemoMode: boolean;
   maxCameras: number;
   maxVehicles: number;
+  userRole?: string;
 }
 
 export default function DeviceManager({
@@ -33,17 +36,21 @@ export default function DeviceManager({
   onToggleControl,
   onAddDevice,
   onRemoveDevice,
+  onUpdateDevice,
   onToggleDemoMode,
   isDemoMode,
   maxCameras,
-  maxVehicles
+  maxVehicles,
+  userRole
 }: DeviceManagerProps) {
   const [activeTab, setActiveTab] = useState<"all" | "camera" | "vehicle">("all");
   const [showAddForm, setShowAddForm] = useState(false);
+  const [editingDevice, setEditingDevice] = useState<Device | null>(null);
   const [newDeviceName, setNewDeviceName] = useState("");
   const [newDeviceType, setNewDeviceType] = useState<"camera" | "vehicle">("camera");
   const [driverName, setDriverName] = useState("");
   const [licensePlate, setLicensePlate] = useState("");
+
 
   const filteredDevices = devices.filter(
     (d) => activeTab === "all" || d.type === activeTab
@@ -110,13 +117,15 @@ export default function DeviceManager({
             {isDemoMode ? "SIMULATOR ACTIVE" : "SIMULATOR PAUSED"}
           </button>
 
-          <button
-            onClick={() => setShowAddForm(!showAddForm)}
-            className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            Provision Asset
-          </button>
+          {userRole !== "inspector" && (
+            <button
+              onClick={() => setShowAddForm(!showAddForm)}
+              className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Provision Asset
+            </button>
+          )}
         </div>
       </div>
 
@@ -219,6 +228,132 @@ export default function DeviceManager({
               className="bg-emerald-500 hover:bg-emerald-600 text-slate-950 px-4 py-2 rounded text-xs font-bold transition-all duration-300"
             >
               Confirm Provisioning
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Edit Form Modal/Overlay styled clean */}
+      {editingDevice && (
+        <form 
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!editingDevice.name.trim()) return;
+            onUpdateDevice(editingDevice.id, {
+              name: editingDevice.name,
+              driverName: editingDevice.type === "vehicle" ? editingDevice.driverName : undefined,
+              licensePlate: editingDevice.type === "vehicle" ? editingDevice.licensePlate : undefined,
+              battery: editingDevice.battery,
+              signal: editingDevice.signal,
+              status: editingDevice.status
+            });
+            setEditingDevice(null);
+          }} 
+          className="bg-slate-950 p-4 rounded-lg border border-indigo-500/30 mb-6 space-y-4 shadow-[0_0_15px_rgba(99,102,241,0.05)]"
+        >
+          <div className="flex justify-between items-center border-b border-slate-800 pb-2 mb-2">
+            <span className="text-sm font-semibold text-indigo-400">Edit Asset Configuration: #{editingDevice.id}</span>
+            <button 
+              type="button" 
+              onClick={() => setEditingDevice(null)} 
+              className="text-xs text-slate-500 hover:text-slate-300"
+            >
+              Cancel
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Asset Name</label>
+              <input
+                type="text"
+                value={editingDevice.name}
+                onChange={(e) => setEditingDevice({ ...editingDevice, name: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                required
+              />
+            </div>
+            
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Real-time Connection Signal</label>
+              <select
+                value={editingDevice.signal}
+                onChange={(e) => setEditingDevice({ ...editingDevice, signal: e.target.value as any })}
+                className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="excellent">Excellent</option>
+                <option value="good">Good</option>
+                <option value="fair">Fair</option>
+                <option value="weak">Weak</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Asset Status</label>
+              <select
+                value={editingDevice.status}
+                onChange={(e) => setEditingDevice({ ...editingDevice, status: e.target.value as any })}
+                className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+              >
+                <option value="online">Online / Active</option>
+                <option value="offline">Offline / Standby</option>
+                <option value="alerting">Alerting / Inbound threat</option>
+              </select>
+            </div>
+
+            {editingDevice.type === "camera" && (
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Simulated Battery (%)</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={editingDevice.battery || 100}
+                  onChange={(e) => setEditingDevice({ ...editingDevice, battery: parseInt(e.target.value) || 100 })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            )}
+          </div>
+
+          {editingDevice.type === "vehicle" && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-slate-900 pt-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Patrol Officer / Driver</label>
+                <input
+                  type="text"
+                  value={editingDevice.driverName || ""}
+                  onChange={(e) => setEditingDevice({ ...editingDevice, driverName: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">Plate Reg Number</label>
+                <input
+                  type="text"
+                  value={editingDevice.licensePlate || ""}
+                  onChange={(e) => setEditingDevice({ ...editingDevice, licensePlate: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-end pt-2 gap-2">
+            <button
+              type="button"
+              onClick={() => setEditingDevice(null)}
+              className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded text-xs transition-all duration-300"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="bg-indigo-500 hover:bg-indigo-600 text-slate-950 px-4 py-2 rounded text-xs font-bold transition-all duration-300"
+            >
+              Save Changes
             </button>
           </div>
         </form>
@@ -338,25 +473,27 @@ export default function DeviceManager({
                   {device.type === "camera" && (
                     <>
                       <button
-                        onClick={() => onToggleControl(device.id, "siren")}
-                        title={device.sirenOn ? "Siren Active" : "Trigger Siren"}
+                        onClick={() => userRole !== "inspector" && onToggleControl(device.id, "siren")}
+                        disabled={userRole === "inspector"}
+                        title={userRole === "inspector" ? "Read-only access" : (device.sirenOn ? "Siren Active" : "Trigger Siren")}
                         className={`p-1.5 rounded-lg border transition-all ${
                           device.sirenOn
                             ? "bg-red-500/20 text-red-400 border-red-500/40 animate-bounce"
                             : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
-                        }`}
+                        } ${userRole === "inspector" ? "opacity-50 cursor-not-allowed" : ""}`}
                       >
                         {device.sirenOn ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
                       </button>
 
                       <button
-                        onClick={() => onToggleControl(device.id, "light")}
-                        title={device.lightOn ? "Light Active" : "Trigger Spotlight"}
+                        onClick={() => userRole !== "inspector" && onToggleControl(device.id, "light")}
+                        disabled={userRole === "inspector"}
+                        title={userRole === "inspector" ? "Read-only access" : (device.lightOn ? "Light Active" : "Trigger Spotlight")}
                         className={`p-1.5 rounded-lg border transition-all ${
                           device.lightOn
                             ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/40"
                             : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
-                        }`}
+                        } ${userRole === "inspector" ? "opacity-50 cursor-not-allowed" : ""}`}
                       >
                         <Lightbulb className="w-4 h-4" />
                       </button>
@@ -365,13 +502,14 @@ export default function DeviceManager({
 
                   {/* Standard Record command */}
                   <button
-                    onClick={() => onToggleControl(device.id, "recording")}
-                    title={device.recording ? "Recording Live" : "Start Live Feed Recording"}
+                    onClick={() => userRole !== "inspector" && onToggleControl(device.id, "recording")}
+                    disabled={userRole === "inspector"}
+                    title={userRole === "inspector" ? "Read-only access" : (device.recording ? "Recording Live" : "Start Live Feed Recording")}
                     className={`p-1.5 rounded-lg border transition-all ${
                       device.recording
                         ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40"
                         : "bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200"
-                    }`}
+                    } ${userRole === "inspector" ? "opacity-50 cursor-not-allowed" : ""}`}
                   >
                     {device.recording ? (
                       <span className="flex items-center gap-1">
@@ -383,14 +521,27 @@ export default function DeviceManager({
                     )}
                   </button>
 
+                  {/* Edit button */}
+                  {userRole !== "inspector" && (
+                    <button
+                      onClick={() => setEditingDevice(device)}
+                      className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-indigo-400 hover:bg-indigo-950/30 hover:border-indigo-900/40 transition-all cursor-pointer"
+                      title="Edit Asset Details"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  )}
+
                   {/* Delete button */}
-                  <button
-                    onClick={() => onRemoveDevice(device.id)}
-                    className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-red-400 hover:bg-red-950/30 hover:border-red-900/40 transition-all cursor-pointer"
-                    title="Deprovision Asset"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+                  {userRole !== "inspector" && (
+                    <button
+                      onClick={() => onRemoveDevice(device.id)}
+                      className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-red-400 hover:bg-red-950/30 hover:border-red-900/40 transition-all cursor-pointer"
+                      title="Deprovision Asset"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

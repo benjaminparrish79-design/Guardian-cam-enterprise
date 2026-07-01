@@ -109,7 +109,9 @@ export default function IntelligenceHub({ devices, onTriggerAlert, apiKeyLoaded 
         body: JSON.stringify({
           image: imageSrc,
           prompt: promptToSend,
-          model: selectedModel
+          model: selectedModel,
+          selectedDevice: selectedDevice || "cam-01",
+          selectedDeviceName: deviceObj?.name || "Direct Uplink AI Stream"
         })
       });
 

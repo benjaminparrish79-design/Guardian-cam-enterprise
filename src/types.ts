@@ -76,3 +76,24 @@ export interface BillingConfig {
   maxProperties: number;
   unlockedFeatures: string[];
 }
+
+export interface AIEvent {
+  id: string;
+  deviceId: string;
+  deviceName: string;
+  imageUrl: string;
+  prompt: string;
+  threatLevel: "low" | "medium" | "high" | "critical" | "none";
+  description: string;
+  objectsDetected: string[];
+  boundingBoxes?: Array<{
+    label: string;
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  }>;
+  timestamp: string;
+  resolved: boolean;
+}
+

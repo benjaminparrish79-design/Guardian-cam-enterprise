@@ -143,7 +143,9 @@ export default function ScenarioSynthesizer({
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1.5 flex items-center gap-1">
                 Resolution Target (imageSize)
-                <Info className="w-3 h-3 text-slate-500" title="Pro image supports 1K, 2K and 4K output sizes" />
+                <span title="Pro image supports 1K, 2K and 4K output sizes" className="cursor-help">
+                  <Info className="w-3 h-3 text-slate-500" />
+                </span>
               </label>
               <div className="grid grid-cols-3 gap-2">
                 {SIZE_PRESETS.map((sz) => (

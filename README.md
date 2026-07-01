@@ -1,20 +1,34 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# GuardianCam Enterprise
 
-# Run and deploy your AI Studio app
+**Enterprise Unified Security Operations (SecOps) Platform**
 
-This contains everything you need to run your app locally.
+AI-powered video surveillance • Remote fleet tracking • Florida GIBMP compliance • Threat image synthesis.
 
-View your app in AI Studio: https://ai.studio/apps/910612a6-d961-4688-89ae-4a1b8cde5c29
+---
 
-## Run Locally
+## ✨ Features
 
-**Prerequisites:**  Node.js
+- Real-time AI vision analysis (Gemini 3.5 Flash)
+- Multi-tenant architecture with organization isolation
+- Device management (Cameras + Patrol Vehicles)
+- Intelligent alerts & machine vision event logging
+- Synthetic scenario generation for training
+- Florida GIBMP compliance checklists & work orders
+- Stripe-ready billing tiers
+- Hybrid persistence (PostgreSQL + fallback)
 
+---
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## 🚀 Quick Start
+
+### Prerequisites
+- Node.js 20+
+- Supabase project (or PostgreSQL)
+- Gemini API Key
+
+### 1. Clone & Install
+```bash
+git clone <your-repo>
+cd guardiancam-enterprise
+npm install
+```
