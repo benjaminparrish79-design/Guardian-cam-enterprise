@@ -1,8 +1,9 @@
 import { db } from "@/db";
 import { devices, alerts, aiEvents, billingConfigs, organizations, complianceRecords, workOrders } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
+import { getOrganizationId } from "@/lib/supabase";
 
 // Types
 import { Device, SecurityAlert, AIEvent, BillingConfig, ComplianceRecord } from "@/types";
@@ -186,15 +187,20 @@ async function getOrCreateOrgId(): Promise<string> {
 
 export const dbClient = {
   // === Devices Operations ===
-  async getDevices(): Promise<Device[]> {
+  async getDevices(organizationId?: string): Promise<Device[]> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
-      return getFallbackState().devices;
+      const state = getFallbackState();
+      state.devices.forEach(d => {
+        if (!(d as any).organizationId) (d as any).organizationId = "00000000-0000-0000-0000-000000000000";
+      });
+      return state.devices.filter(d => (d as any).organizationId === orgId);
     }
     try {
-      const rows = await db.select().from(devices);
+      const rows = await db.select().from(devices).where(eq(devices.organizationId, orgId));
+
       if (rows.length === 0) {
-        // Seed database
-        const orgId = await getOrCreateOrgId();
+        // Seed database for organization
         await db.insert(devices).values(
           DEFAULT_DEVICES.map(d => ({
             id: d.id,
@@ -215,7 +221,7 @@ export const dbClient = {
             organizationId: orgId
           }))
         );
-        return DEFAULT_DEVICES;
+        return DEFAULT_DEVICES.map(d => ({ ...d, organizationId: orgId } as any));
       }
       return rows.map(r => ({
         id: r.id,
@@ -232,22 +238,29 @@ export const dbClient = {
         recording: r.recording ?? undefined,
         speed: r.speed ?? undefined,
         licensePlate: r.licensePlate ?? undefined,
-        driverName: r.driverName ?? undefined
+        driverName: r.driverName ?? undefined,
+        organizationId: r.organizationId || undefined
       }));
     } catch (err) {
       console.warn("DB getDevices failed, falling back", err);
-      return getFallbackState().devices;
+      return getFallbackState().devices.filter(d => !(d as any).organizationId || (d as any).organizationId === orgId);
     }
   },
 
-  async addDevice(device: Device): Promise<void> {
+  async addDevice(device: Device, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.devices.push(device);
-    saveFallbackState(state);
+    const withOrg = { ...device, organizationId: orgId };
+    if (!state.devices.some(d => d.id === device.id)) {
+      state.devices.push(withOrg as any);
+      saveFallbackState(state);
+    } else {
+      state.devices = state.devices.map(d => d.id === device.id ? (withOrg as any) : d);
+      saveFallbackState(state);
+    }
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       await db.insert(devices).values({
         id: device.id,
         name: device.name,
@@ -271,13 +284,16 @@ export const dbClient = {
     }
   },
 
-  async updateDevice(id: string, updatedFields: Partial<Device>): Promise<void> {
+  async updateDevice(id: string, updatedFields: Partial<Device>, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.devices = state.devices.map(d => d.id === id ? { ...d, ...updatedFields } : d);
+    state.devices = state.devices.map(d => d.id === id ? { ...d, ...updatedFields, organizationId: orgId } : d);
     saveFallbackState(state);
 
     if (!db) return;
     try {
+      const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
+
       await db.update(devices)
         .set({
           name: updatedFields.name,
@@ -294,35 +310,41 @@ export const dbClient = {
           licensePlate: updatedFields.licensePlate,
           driverName: updatedFields.driverName
         })
-        .where(eq(devices.id, id));
+        .where(condition);
     } catch (err) {
       console.warn("DB updateDevice failed", err);
     }
   },
 
-  async deleteDevice(id: string): Promise<void> {
+  async deleteDevice(id: string, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
     state.devices = state.devices.filter(d => d.id !== id);
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      await db.delete(devices).where(eq(devices.id, id));
+      const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
+      await db.delete(devices).where(condition);
     } catch (err) {
       console.warn("DB deleteDevice failed", err);
     }
   },
 
   // === Alerts Operations ===
-  async getAlerts(): Promise<SecurityAlert[]> {
+  async getAlerts(organizationId?: string): Promise<SecurityAlert[]> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
-      return getFallbackState().alerts;
+      const state = getFallbackState();
+      state.alerts.forEach(a => {
+        if (!(a as any).organizationId) (a as any).organizationId = "00000000-0000-0000-0000-000000000000";
+      });
+      return state.alerts.filter(a => (a as any).organizationId === orgId);
     }
     try {
-      const rows = await db.select().from(alerts);
+      const rows = await db.select().from(alerts).where(eq(alerts.organizationId, orgId));
       if (rows.length === 0) {
         // Seed database
-        const orgId = await getOrCreateOrgId();
         await db.insert(alerts).values(
           DEFAULT_ALERTS.map(a => ({
             id: a.id,
@@ -337,7 +359,7 @@ export const dbClient = {
             organizationId: orgId
           }))
         );
-        return DEFAULT_ALERTS;
+        return DEFAULT_ALERTS.map(a => ({ ...a, organizationId: orgId } as any));
       }
       return rows.map(r => ({
         id: r.id,
@@ -348,22 +370,24 @@ export const dbClient = {
         message: r.message,
         description: r.description,
         objectsDetected: (r.objectsDetected as string[]) || [],
-        resolved: r.resolved
+        resolved: r.resolved,
+        organizationId: r.organizationId || undefined
       }));
     } catch (err) {
       console.warn("DB getAlerts failed, falling back", err);
-      return getFallbackState().alerts;
+      return getFallbackState().alerts.filter(a => !(a as any).organizationId || (a as any).organizationId === orgId);
     }
   },
 
-  async addAlert(alert: SecurityAlert): Promise<void> {
+  async addAlert(alert: SecurityAlert, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.alerts = [alert, ...state.alerts];
+    const withOrg = { ...alert, organizationId: orgId };
+    state.alerts = [withOrg as any, ...state.alerts];
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       await db.insert(alerts).values({
         id: alert.id,
         deviceId: alert.deviceId,
@@ -381,13 +405,15 @@ export const dbClient = {
     }
   },
 
-  async updateAlert(id: string, updatedFields: Partial<SecurityAlert>): Promise<void> {
+  async updateAlert(id: string, updatedFields: Partial<SecurityAlert>, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.alerts = state.alerts.map(a => a.id === id ? { ...a, ...updatedFields } : a);
+    state.alerts = state.alerts.map(a => a.id === id ? { ...a, ...updatedFields, organizationId: orgId } : a);
     saveFallbackState(state);
 
     if (!db) return;
     try {
+      const condition = and(eq(alerts.id, id), eq(alerts.organizationId, orgId));
       await db.update(alerts)
         .set({
           resolved: updatedFields.resolved !== undefined ? updatedFields.resolved : undefined,
@@ -395,22 +421,26 @@ export const dbClient = {
           message: updatedFields.message,
           description: updatedFields.description
         })
-        .where(eq(alerts.id, id));
+        .where(condition);
     } catch (err) {
       console.warn("DB updateAlert failed", err);
     }
   },
 
   // === AI Machine Vision Events ===
-  async getAIEvents(): Promise<AIEvent[]> {
+  async getAIEvents(organizationId?: string): Promise<AIEvent[]> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
-      return getFallbackState().aiEvents;
+      const state = getFallbackState();
+      state.aiEvents.forEach(e => {
+        if (!(e as any).organizationId) (e as any).organizationId = "00000000-0000-0000-0000-000000000000";
+      });
+      return state.aiEvents.filter(e => (e as any).organizationId === orgId);
     }
     try {
-      const rows = await db.select().from(aiEvents);
+      const rows = await db.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
       if (rows.length === 0) {
         // Seed database
-        const orgId = await getOrCreateOrgId();
         await db.insert(aiEvents).values(
           DEFAULT_AI_EVENTS.map(e => ({
             deviceId: e.deviceId,
@@ -420,12 +450,11 @@ export const dbClient = {
             description: e.description,
             objectsDetected: e.objectsDetected,
             boundingBoxes: e.boundingBoxes,
-            resolved: e.resolved,
             organizationId: orgId
           }))
         );
         // Re-read with actual IDs
-        const seeded = await db.select().from(aiEvents);
+        const seeded = await db.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
         return seeded.map(r => ({
           id: r.id,
           deviceId: r.deviceId || "",
@@ -437,7 +466,8 @@ export const dbClient = {
           objectsDetected: (r.objectsDetected as string[]) || [],
           boundingBoxes: (r.boundingBoxes as any[]) || undefined,
           timestamp: r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric" }) + " AM",
-          resolved: (r as any).resolved || false // Fallback if resolved is a local custom column or not
+          resolved: (r as any).resolved || false,
+          organizationId: r.organizationId || undefined
         }));
       }
       return rows.map(r => ({
@@ -451,22 +481,24 @@ export const dbClient = {
         objectsDetected: (r.objectsDetected as string[]) || [],
         boundingBoxes: (r.boundingBoxes as any[]) || undefined,
         timestamp: r.timestamp ? r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric", hour12: true }) : "Just now",
-        resolved: (r as any).resolved || false
+        resolved: (r as any).resolved || false,
+        organizationId: r.organizationId || undefined
       }));
     } catch (err) {
       console.warn("DB getAIEvents failed, falling back", err);
-      return getFallbackState().aiEvents;
+      return getFallbackState().aiEvents.filter(e => !(e as any).organizationId || (e as any).organizationId === orgId);
     }
   },
 
-  async addAIEvent(event: AIEvent): Promise<void> {
+  async addAIEvent(event: AIEvent, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.aiEvents = [event, ...state.aiEvents];
+    const withOrg = { ...event, organizationId: orgId };
+    state.aiEvents = [withOrg as any, ...state.aiEvents];
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       await db.insert(aiEvents).values({
         deviceId: event.deviceId,
         imageUrl: event.imageUrl,
@@ -482,36 +514,20 @@ export const dbClient = {
     }
   },
 
-  async updateAIEvent(id: string, resolved: boolean): Promise<void> {
+  async updateAIEvent(id: string, resolved: boolean, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.aiEvents = state.aiEvents.map(e => e.id === id ? { ...e, resolved } : e);
+    state.aiEvents = state.aiEvents.map(e => e.id === id ? { ...e, resolved, organizationId: orgId } : e);
     saveFallbackState(state);
-
-    // Some tables might not have the resolved field yet on ai_events if it wasn't strictly in the schema.ts.
-    // Drizzle schema does not have 'resolved' column in schema.ts on ai_events.
-    // Let's verify our schema:
-    // export const aiEvents = pgTable("ai_events", {
-    //   id: uuid("id").primaryKey().defaultRandom(),
-    //   deviceId: text("device_id").references(() => devices.id, { onDelete: "cascade" }),
-    //   imageUrl: text("image_url").notNull(),
-    //   prompt: text("prompt"),
-    //   threatLevel: text("threat_level").notNull(), // 'low' | 'medium' | 'high' | 'critical' | 'none'
-    //   description: text("description").notNull(),
-    //   objectsDetected: jsonb("objects_detected").default([]).notNull(),
-    //   boundingBoxes: jsonb("bounding_boxes").default([]),
-    //   timestamp: timestamp("timestamp").defaultNow().notNull(),
-    //   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-    // });
-    // Ah! It doesn't have a resolved column. So we store resolution in local fallback or we handle it gracefully.
   },
 
   // === Billing Configuration Operations ===
-  async getBillingConfig(): Promise<BillingConfig> {
+  async getBillingConfig(organizationId?: string): Promise<BillingConfig> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
       return getFallbackState().billing;
     }
     try {
-      const orgId = await getOrCreateOrgId();
       const rows = await db.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
       if (rows.length === 0) {
         // Seed billing configuration for organization
@@ -540,14 +556,14 @@ export const dbClient = {
     }
   },
 
-  async updateBillingConfig(config: BillingConfig): Promise<void> {
+  async updateBillingConfig(config: BillingConfig, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
     state.billing = config;
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       // Try to update or insert if not exists
       const existing = await db.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
       if (existing.length > 0) {
@@ -577,15 +593,20 @@ export const dbClient = {
     }
   },
 
-  async getComplianceRecords(): Promise<any[]> {
+  async getComplianceRecords(organizationId?: string): Promise<any[]> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
-      return getFallbackState().compliance || [];
+      const state = getFallbackState();
+      const records = state.compliance || [];
+      records.forEach(r => {
+        if (!(r as any).organizationId) (r as any).organizationId = "00000000-0000-0000-0000-000000000000";
+      });
+      return records.filter(r => (r as any).organizationId === orgId);
     }
     try {
-      const rows = await db.select().from(complianceRecords);
+      const rows = await db.select().from(complianceRecords).where(eq(complianceRecords.organizationId, orgId));
       if (rows.length === 0) {
         // Seed the compliance records table
-        const orgId = await getOrCreateOrgId();
         await db.insert(complianceRecords).values(
           DEFAULT_COMPLIANCE.map(r => ({
             id: r.id,
@@ -599,7 +620,7 @@ export const dbClient = {
             organizationId: orgId
           }))
         );
-        return DEFAULT_COMPLIANCE;
+        return DEFAULT_COMPLIANCE.map(r => ({ ...r, organizationId: orgId }));
       }
       return rows.map(r => ({
         id: r.id,
@@ -609,22 +630,25 @@ export const dbClient = {
         score: r.score,
         status: r.status as any,
         notes: r.notes || "",
-        checklist: r.checklist as any
+        checklist: r.checklist as any,
+        organizationId: r.organizationId || undefined
       }));
     } catch (err) {
       console.warn("DB getComplianceRecords failed, falling back", err);
-      return getFallbackState().compliance || [];
+      const records = getFallbackState().compliance || [];
+      return records.filter(r => !(r as any).organizationId || (r as any).organizationId === orgId);
     }
   },
 
-  async addComplianceRecord(record: any): Promise<void> {
+  async addComplianceRecord(record: any, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.compliance = [...(state.compliance || []), record];
+    const withOrg = { ...record, organizationId: orgId };
+    state.compliance = [...(state.compliance || []), withOrg];
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       await db.insert(complianceRecords).values({
         id: record.id,
         propertyName: record.propertyName,
@@ -641,12 +665,18 @@ export const dbClient = {
     }
   },
 
-  async getWorkOrders(): Promise<any[]> {
+  async getWorkOrders(organizationId?: string): Promise<any[]> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     if (!db) {
-      return getFallbackState().workOrders || [];
+      const state = getFallbackState();
+      const orders = state.workOrders || [];
+      orders.forEach(o => {
+        if (!(o as any).organizationId) (o as any).organizationId = "00000000-0000-0000-0000-000000000000";
+      });
+      return orders.filter(o => (o as any).organizationId === orgId);
     }
     try {
-      const rows = await db.select().from(workOrders);
+      const rows = await db.select().from(workOrders).where(eq(workOrders.organizationId, orgId));
       return rows.map(r => ({
         id: r.id,
         title: r.title,
@@ -656,22 +686,25 @@ export const dbClient = {
         assignedTo: r.assignedTo || "",
         complianceRecordId: r.complianceRecordId || "",
         dueDate: r.dueDate || "",
-        createdAt: r.createdAt ? r.createdAt.toISOString() : undefined
+        createdAt: r.createdAt ? r.createdAt.toISOString() : undefined,
+        organizationId: r.organizationId || undefined
       }));
     } catch (err) {
       console.warn("DB getWorkOrders failed, falling back", err);
-      return getFallbackState().workOrders || [];
+      const orders = getFallbackState().workOrders || [];
+      return orders.filter(o => !(o as any).organizationId || (o as any).organizationId === orgId);
     }
   },
 
-  async addWorkOrder(order: any): Promise<void> {
+  async addWorkOrder(order: any, organizationId?: string): Promise<void> {
+    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
     const state = getFallbackState();
-    state.workOrders = [...(state.workOrders || []), order];
+    const withOrg = { ...order, organizationId: orgId };
+    state.workOrders = [...(state.workOrders || []), withOrg];
     saveFallbackState(state);
 
     if (!db) return;
     try {
-      const orgId = await getOrCreateOrgId();
       await db.insert(workOrders).values({
         id: order.id && order.id.includes("-") ? order.id : undefined, // Will use db auto uuid if invalid format
         title: order.title,

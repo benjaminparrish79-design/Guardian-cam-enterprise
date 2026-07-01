@@ -38,14 +38,25 @@ export async function getCurrentUser() {
 
 // Helper to get organization_id from user metadata or JWT
 export async function getOrganizationId(): Promise<string | null> {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  
+  if (!supabaseUrl || !supabaseAnonKey || supabaseUrl.includes("your-supabase-project")) {
+    return "00000000-0000-0000-0000-000000000000";
+  }
+
   const supabaseClient = getSupabase();
-  if (!supabaseClient) return null;
+  if (!supabaseClient) {
+    return "00000000-0000-0000-0000-000000000000";
+  }
 
   const {
     data: { session },
   } = await supabaseClient.auth.getSession();
 
-  if (!session?.user) return null;
+  if (!session?.user) {
+    return "00000000-0000-0000-0000-000000000000";
+  }
 
   // Try to get org_id from user metadata first
   const orgIdFromMetadata = session.user.user_metadata?.organization_id;
@@ -55,5 +66,5 @@ export async function getOrganizationId(): Promise<string | null> {
   const orgIdFromJWT = (session.access_token as any)?.org_id;
   if (orgIdFromJWT) return orgIdFromJWT;
 
-  return null;
+  return "00000000-0000-0000-0000-000000000000";
 }

@@ -1,73 +1,97 @@
 import { NextRequest, NextResponse } from "next/server";
 import { dbClient } from "@/lib/db-client";
-import { Device } from "@/types";
 import { deviceSchema } from "@/lib/validations";
+import { rateLimit } from "@/lib/rate-limit";
+import { getOrganizationId } from "@/lib/supabase";
 
 export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(req.url);
-    const orgId = searchParams.get("organizationId");
+    const orgId = await getOrganizationId();
+    if (!orgId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    const data = await dbClient.getDevices();
-    
-    // Basic filtering (can be improved with real auth later)
-    const filtered = orgId 
-      ? data.filter((d: any) => d.organizationId === orgId) 
-      : data;
-
-    return NextResponse.json(filtered);
+    const data = await dbClient.getDevices(orgId);
+    return NextResponse.json(data);
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to fetch devices" }, { status: 500 });
   }
 }
 
 export async function POST(req: NextRequest) {
+  const ip = req.headers.get("x-forwarded-for") || "unknown";
+  if (!rateLimit(ip, 20, 60000).success) {
+    return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
+  }
+
   try {
+    const orgId = await getOrganizationId();
+    if (!orgId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = await req.json();
-    
-    // Input Validation
-    const validation = deviceSchema.safeParse(body);
-    if (!validation.success) {
-      return NextResponse.json({ error: "Invalid device data", details: validation.error.format() }, { status: 400 });
+    const validated = deviceSchema.safeParse(body);
+    if (!validated.success) {
+      return NextResponse.json({ error: "Invalid device data", details: validated.error.format() }, { status: 400 });
     }
 
-    await dbClient.addDevice(validation.data as Device);
+    const deviceData = {
+      id: validated.data.id || `dev-${Math.random().toString(36).substring(2, 9)}`,
+      name: validated.data.name,
+      type: validated.data.type,
+      status: validated.data.status || "online",
+      battery: validated.data.battery,
+      signal: validated.data.signal,
+      lastActive: "Just now",
+      latitude: validated.data.latitude,
+      longitude: validated.data.longitude,
+      sirenOn: validated.data.sirenOn ?? false,
+      lightOn: validated.data.lightOn ?? false,
+      recording: validated.data.recording ?? false,
+      speed: validated.data.speed,
+      licensePlate: validated.data.licensePlate,
+      driverName: validated.data.driverName,
+    };
+
+    await dbClient.addDevice(deviceData, orgId);
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to create device" }, { status: 500 });
   }
 }
 
 export async function PUT(req: NextRequest) {
   try {
+    const orgId = await getOrganizationId();
+    if (!orgId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const body = await req.json();
     const { id, ...updatedFields } = body;
 
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
-    // Validate the updated fields partially
-    const validation = deviceSchema.partial().safeParse(updatedFields);
-    if (!validation.success) {
-      return NextResponse.json({ error: "Invalid device data", details: validation.error.format() }, { status: 400 });
+    const validated = deviceSchema.partial().safeParse(updatedFields);
+    if (!validated.success) {
+      return NextResponse.json({ error: "Invalid device data", details: validated.error.format() }, { status: 400 });
     }
 
-    await dbClient.updateDevice(id, validation.data);
+    await dbClient.updateDevice(id, validated.data, orgId);
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to update device" }, { status: 500 });
   }
 }
 
 export async function DELETE(req: NextRequest) {
   try {
+    const orgId = await getOrganizationId();
+    if (!orgId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
     const { searchParams } = new URL(req.url);
     const id = searchParams.get("id");
 
     if (!id) return NextResponse.json({ error: "ID required" }, { status: 400 });
 
-    await dbClient.deleteDevice(id);
+    await dbClient.deleteDevice(id, orgId);
     return NextResponse.json({ success: true });
   } catch (err: any) {
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: "Failed to delete device" }, { status: 500 });
   }
 }
