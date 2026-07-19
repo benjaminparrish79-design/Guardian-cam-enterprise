@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import React, { useState, useEffect } from "react";
 import { Device, SecurityAlert, ComplianceRecord, GeneratedScenario, BillingConfig, AIEvent } from "../types";
 import CommandCenter from "../components/CommandCenter";
@@ -9,6 +11,7 @@ import ScenarioSynthesizer from "../components/ScenarioSynthesizer";
 import FleetTracker from "../components/FleetTracker";
 import ComplianceHub from "../components/ComplianceHub";
 import BillingSettings from "../components/BillingSettings";
+import DashboardOverview from "../components/DashboardOverview";
 import { 
   ShieldCheck, 
   Server, 
@@ -24,8 +27,14 @@ import {
   LogOut,
   Building,
   Key,
-  ShieldAlert
+  ShieldAlert,
+  LayoutDashboard,
+  Eye,
+  Terminal,
+  Database,
+  RefreshCw
 } from "lucide-react";
+import { motion } from "motion/react";
 import { getSupabase } from "../lib/supabase";
 
 const INITIAL_DEVICES: Device[] = [
@@ -156,8 +165,9 @@ export default function Home() {
   const [authPassword, setAuthPassword] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [isRegistering, setIsRegistering] = useState(false);
 
-  const [activeTab, setActiveTab] = useState<"command" | "devices" | "vision" | "scenarios" | "fleet" | "compliance" | "billing">("command");
+  const [activeTab, setActiveTab] = useState<"dashboard" | "command" | "devices" | "vision" | "scenarios" | "fleet" | "compliance" | "billing">("dashboard");
   const [devices, setDevices] = useState<Device[]>(INITIAL_DEVICES);
   const [alerts, setAlerts] = useState<SecurityAlert[]>(INITIAL_ALERTS);
   const [aiEvents, setAiEvents] = useState<AIEvent[]>(INITIAL_AI_EVENTS);
@@ -179,23 +189,44 @@ maxVehicles: 2,
   const [currentTime, setCurrentTime] = useState("");
 
   // Fetch API key configurations and database-backed data on boot, and restore auth session
+  // 1. Initial setup and authentication recovery
   useEffect(() => {
-    // Check localStorage session first
+    // Check localStorage session first for instant UX
     const savedSession = localStorage.getItem("guardian_session");
     if (savedSession) {
       try {
         const parsed = JSON.parse(savedSession);
         setUser(parsed);
-        // Default active tab based on role
         if (parsed.role === "inspector") {
           setActiveTab("compliance");
         } else {
-          setActiveTab("command");
+          setActiveTab("dashboard");
         }
       } catch (e) {
         console.error("Failed to parse saved session", e);
       }
     }
+
+    // Verify and sync with server-side session
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.authenticated && data.user) {
+          const loggedUser: AuthUser = {
+            email: data.user.email,
+            role: data.user.role,
+            organization: data.user.organizationName || "Supabase Cloud Tenant"
+          };
+          setUser(loggedUser);
+          localStorage.setItem("guardian_session", JSON.stringify(loggedUser));
+          if (data.user.role === "inspector") {
+            setActiveTab("compliance");
+          } else {
+            setActiveTab("dashboard");
+          }
+        }
+      })
+      .catch((err) => console.log("Failed to verify server-side auth state", err));
 
     // Load API configuration
     fetch("/api/config")
@@ -208,6 +239,25 @@ maxVehicles: 2,
         }
       })
       .catch((err) => console.log("Failed to contact server config API", err));
+
+    // Dynamic clock
+    const updateTime = () => {
+      const now = new Date();
+      setCurrentTime(now.toLocaleTimeString() + " UTC");
+    };
+    updateTime();
+    const timer = setInterval(updateTime, 1000);
+
+    return () => {
+      clearInterval(timer);
+    };
+  }, []);
+
+  // 2. Fetch data and set up subscriptions when user session is active
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
 
     // Load persistent devices from Database
     fetch("/api/devices")
@@ -259,15 +309,102 @@ maxVehicles: 2,
       })
       .catch((err) => console.error("Failed to load compliance records from DB", err));
 
-    // Dynamic clock
-    const updateTime = () => {
-      const now = new Date();
-      setCurrentTime(now.toLocaleTimeString() + " UTC");
+    // Setup Supabase Realtime Subscriptions
+    const supabaseClient = getSupabase();
+    let devicesChannel: any;
+    let alertsChannel: any;
+    let aiEventsChannel: any;
+
+    if (supabaseClient) {
+      console.log("Initializing Supabase Realtime subscriptions...");
+
+      devicesChannel = supabaseClient
+        .channel("realtime-devices")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "devices" },
+          (payload: any) => {
+            console.log("Realtime Device Change:", payload);
+            if (payload.eventType === "INSERT") {
+              const newDevice = payload.new as Device;
+              setDevices((prev) => {
+                if (prev.some((d) => d.id === newDevice.id)) return prev;
+                return [...prev, newDevice];
+              });
+            } else if (payload.eventType === "UPDATE") {
+              const updatedDevice = payload.new as Device;
+              setDevices((prev) =>
+                prev.map((d) => (d.id === updatedDevice.id ? { ...d, ...updatedDevice } : d))
+              );
+            } else if (payload.eventType === "DELETE") {
+              const deletedDevice = payload.old as { id: string };
+              setDevices((prev) => prev.filter((d) => d.id !== deletedDevice.id));
+            }
+          }
+        )
+        .subscribe();
+
+      alertsChannel = supabaseClient
+        .channel("realtime-alerts")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "alerts" },
+          (payload: any) => {
+            console.log("Realtime Alert Change:", payload);
+            if (payload.eventType === "INSERT") {
+              const newAlert = payload.new as SecurityAlert;
+              setAlerts((prev) => {
+                if (prev.some((a) => a.id === newAlert.id)) return prev;
+                return [newAlert, ...prev];
+              });
+            } else if (payload.eventType === "UPDATE") {
+              const updatedAlert = payload.new as SecurityAlert;
+              setAlerts((prev) =>
+                prev.map((a) => (a.id === updatedAlert.id ? { ...a, ...updatedAlert } : a))
+              );
+            } else if (payload.eventType === "DELETE") {
+              const deletedAlert = payload.old as { id: string };
+              setAlerts((prev) => prev.filter((a) => a.id !== deletedAlert.id));
+            }
+          }
+        )
+        .subscribe();
+
+      aiEventsChannel = supabaseClient
+        .channel("realtime-ai-events")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "ai_events" },
+          (payload: any) => {
+            console.log("Realtime AI Event Change:", payload);
+            if (payload.eventType === "INSERT") {
+              const newEvent = payload.new as AIEvent;
+              setAiEvents((prev) => {
+                if (prev.some((e) => e.id === newEvent.id)) return prev;
+                return [newEvent, ...prev];
+              });
+            } else if (payload.eventType === "UPDATE") {
+              const updatedEvent = payload.new as AIEvent;
+              setAiEvents((prev) =>
+                prev.map((e) => (e.id === updatedEvent.id ? { ...e, ...updatedEvent } : e))
+              );
+            } else if (payload.eventType === "DELETE") {
+              const deletedEvent = payload.old as { id: string };
+              setAiEvents((prev) => prev.filter((e) => e.id !== deletedEvent.id));
+            }
+          }
+        )
+        .subscribe();
+    }
+
+    return () => {
+      if (supabaseClient) {
+        if (devicesChannel) supabaseClient.removeChannel(devicesChannel);
+        if (alertsChannel) supabaseClient.removeChannel(alertsChannel);
+        if (aiEventsChannel) supabaseClient.removeChannel(aiEventsChannel);
+      }
     };
-    updateTime();
-    const timer = setInterval(updateTime, 1000);
-    return () => clearInterval(timer);
-  }, []);
+  }, [user]);
 
   const handleSupabaseSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -280,49 +417,36 @@ maxVehicles: 2,
     
     try {
       const supabase = getSupabase();
-      if (supabase) {
-        const { data, error } = await supabase.auth.signInWithPassword({
+      if (!supabase) {
+        setAuthError("Authentication is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.");
+        return;
+      }
+
+      if (isRegistering) {
+        const { data, error } = await supabase.auth.signUp({
           email: authEmail,
           password: authPassword,
         });
         if (error) {
           setAuthError(error.message);
-        } else if (data?.user) {
-          // Infer user role by email keyword
-          let role: "admin" | "operator" | "inspector" = "admin";
-          if (authEmail.includes("operator")) role = "operator";
-          if (authEmail.includes("inspector")) role = "inspector";
-          
-          const loggedUser: AuthUser = {
-            email: data.user.email || authEmail,
-            role: role,
-            organization: "Supabase Cloud Tenant"
-          };
-          setUser(loggedUser);
-          localStorage.setItem("guardian_session", JSON.stringify(loggedUser));
-          if (role === "inspector") {
-            setActiveTab("compliance");
-          } else {
-            setActiveTab("command");
-          }
+        } else if (data?.session) {
+          // Session established immediately: pull the authoritative
+          // role/org from the server (never guessed from the email).
+          await syncSessionFromServer();
+          setIsRegistering(false);
+        } else {
+          setAuthError("Account created. Check your email to confirm before signing in.");
+          setIsRegistering(false);
         }
       } else {
-        // Fallback/Simulated sign in if Supabase config is empty
-        let role: "admin" | "operator" | "inspector" = "admin";
-        if (authEmail.includes("operator")) role = "operator";
-        if (authEmail.includes("inspector")) role = "inspector";
-
-        const loggedUser: AuthUser = {
+        const { error } = await supabase.auth.signInWithPassword({
           email: authEmail,
-          role: role,
-          organization: "Local Sandbox Tenant"
-        };
-        setUser(loggedUser);
-        localStorage.setItem("guardian_session", JSON.stringify(loggedUser));
-        if (role === "inspector") {
-          setActiveTab("compliance");
+          password: authPassword,
+        });
+        if (error) {
+          setAuthError(error.message);
         } else {
-          setActiveTab("command");
+          await syncSessionFromServer();
         }
       }
     } catch (err: any) {
@@ -332,28 +456,23 @@ maxVehicles: 2,
     }
   };
 
-  const handleBypassLogin = (role: "admin" | "operator" | "inspector") => {
-    let email = "admin@guardiancam.com";
-    let org = "Tampa Command Depot #1";
-    if (role === "operator") {
-      email = "operator@guardiancam.com";
-      org = "Tampa Logistics Fleet Hub";
-    } else if (role === "inspector") {
-      email = "inspector@green-guard.gov";
-      org = "Florida GreenGuard Compliance Division";
-    }
-
-    const loggedUser: AuthUser = {
-      email,
-      role,
-      organization: org
-    };
-    setUser(loggedUser);
-    localStorage.setItem("guardian_session", JSON.stringify(loggedUser));
-    if (role === "inspector") {
-      setActiveTab("compliance");
+  // Pulls the verified role/org for the current session from the server —
+  // this, not anything computed on the client, is what every subsequent
+  // API call is actually authorized against.
+  const syncSessionFromServer = async () => {
+    const res = await fetch("/api/auth/me");
+    const data = await res.json();
+    if (data.authenticated && data.user) {
+      const loggedUser: AuthUser = {
+        email: data.user.email,
+        role: data.user.role,
+        organization: data.user.organizationName || "Supabase Cloud Tenant",
+      };
+      setUser(loggedUser);
+      localStorage.setItem("guardian_session", JSON.stringify(loggedUser));
+      setActiveTab(loggedUser.role === "inspector" ? "compliance" : "dashboard");
     } else {
-      setActiveTab("command");
+      setAuthError("Signed in, but the server could not establish a session. Please try again.");
     }
   };
 
@@ -370,7 +489,7 @@ maxVehicles: 2,
     localStorage.removeItem("guardian_session");
     setAuthEmail("");
     setAuthPassword("");
-    setActiveTab("command");
+    setActiveTab("dashboard");
   };
 
   // Tactical device control toggling
@@ -680,59 +799,179 @@ maxVehicles: 2,
     );
   };
 
+  const handleDemoLogin = (role: "admin" | "operator" | "inspector") => {
+    const demoUser: AuthUser = {
+      email: `${role}@guardiancam.demo`,
+      role,
+      organization: "GuardianCam Tactical Demo Division"
+    };
+    setUser(demoUser);
+    localStorage.setItem("guardian_session", JSON.stringify(demoUser));
+    setActiveTab(role === "inspector" ? "compliance" : "dashboard");
+  };
+
   if (!user) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none antialiased">
-        {/* Visual top lighting glow line */}
-        <div className="h-1 bg-gradient-to-r from-emerald-500 via-indigo-500 to-red-500 w-full" />
-        
-        <div className="flex-1 flex flex-col justify-center items-center px-4 py-12 relative overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.06),transparent_50%)]" />
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_bottom_left,rgba(99,102,241,0.04),transparent_50%)]" />
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans select-none antialiased relative overflow-hidden">
+        {/* Modern glowing spots */}
+        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-indigo-500/10 rounded-full blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-500/10 rounded-full blur-[100px] pointer-events-none" />
+
+        {/* Technical Background Grid Pattern */}
+        <div 
+          className="fixed inset-0 pointer-events-none opacity-[0.12] mix-blend-screen"
+          style={{
+            backgroundImage: `
+              linear-gradient(rgba(148, 163, 184, 0.08) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(148, 163, 184, 0.08) 1px, transparent 1px)
+            `,
+            backgroundSize: '32px 32px',
+            maskImage: 'radial-gradient(circle at center, black, transparent 90%)',
+            WebkitMaskImage: 'radial-gradient(circle at center, black, transparent 90%)',
+          }}
+        />
+
+        <main className="relative z-10 flex-1 grid grid-cols-1 lg:grid-cols-12 max-w-7xl w-full mx-auto p-4 md:p-8 gap-8 items-center">
           
-          <div className="w-full max-w-md bg-slate-900 border border-slate-800/80 rounded-2xl p-8 shadow-2xl relative z-10">
-            <div className="flex flex-col items-center text-center mb-8">
-              <div className="p-3 bg-slate-950 text-emerald-400 rounded-2xl border border-slate-800 shadow-[0_0_20px_rgba(16,185,129,0.1)] mb-4">
-                <ShieldCheck className="w-8 h-8" />
+          {/* Left Column: Interactive Immersive Brand HUD Side (7 columns) */}
+          <section className="hidden lg:flex lg:col-span-7 flex-col justify-between h-[600px] bg-slate-950/40 border border-slate-900 rounded-3xl p-8 relative overflow-hidden backdrop-blur-sm">
+            
+            {/* Top Indicator */}
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono tracking-[0.25em] text-emerald-400 uppercase flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                SECURE GATEWAY NODE_03 ACTIVE
+              </span>
+              <span className="text-[10px] font-mono text-slate-500">
+                {currentTime || "00:00:00 UTC"}
+              </span>
+            </div>
+
+            {/* Immersive Rotating Circular Radar Visual */}
+            <div className="my-auto flex flex-col items-center justify-center relative py-6">
+              <div className="absolute w-72 h-72 rounded-full border border-indigo-500/10 animate-[spin_40s_linear_infinite]" />
+              <div className="absolute w-56 h-56 rounded-full border border-indigo-500/20 border-dashed animate-[spin_20s_linear_infinite_reverse]" />
+              <div className="absolute w-40 h-40 rounded-full border border-emerald-500/15 animate-[pulse_3s_ease-in-out_infinite]" />
+              
+              <div className="relative p-6 bg-slate-900/60 border border-slate-800 rounded-3xl text-emerald-400 shadow-2xl flex flex-col items-center">
+                <ShieldCheck className="w-10 h-10 animate-pulse mb-3" />
+                <span className="text-xs font-mono font-bold tracking-widest text-slate-300">GUARDIANCAM</span>
+                <span className="text-[9px] font-mono text-slate-500 mt-0.5">SECURE INTEL GRID</span>
               </div>
-              <h2 className="text-xl font-black tracking-tight text-slate-100 uppercase">GuardianCam Enterprise</h2>
-              <span className="bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 text-[9px] font-mono px-2.5 py-0.5 rounded tracking-widest uppercase mt-2">
-                SecOps SaaS Gate
+            </div>
+
+            {/* Simulated Live Core Network Feed logs */}
+            <div className="space-y-3 bg-slate-950/60 border border-slate-900 p-4 rounded-2xl">
+              <div className="text-[10px] font-mono text-slate-400 uppercase tracking-widest font-bold flex items-center gap-1.5">
+                <Terminal className="w-3.5 h-3.5 text-indigo-400" />
+                Peripheral Diagnostics Queue
+              </div>
+              
+              <div className="space-y-1.5 font-mono text-[9px] text-slate-500">
+                <div className="flex justify-between items-center border-b border-slate-900/40 pb-1">
+                  <span>[01:14:02 UTC] SECURE_PORT_3000</span>
+                  <span className="text-emerald-500">LISTENING</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-slate-900/40 pb-1">
+                  <span>[01:14:22 UTC] TACTICAL_FLT_COGNITION</span>
+                  <span className="text-emerald-500">6_ONLINE</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span>[01:14:50 UTC] ENVIRONMENTAL_GIBMP_SYNC</span>
+                  <span className="text-indigo-400">90%_HEALTH</span>
+                </div>
+              </div>
+            </div>
+            
+          </section>
+
+          {/* Right Column: Glassmorphism Access Form Card (5 columns) */}
+          <section className="lg:col-span-5 bg-slate-900/40 border border-slate-800/80 backdrop-blur-xl p-6 sm:p-10 rounded-3xl flex flex-col justify-center min-h-[600px] relative shadow-2xl">
+            
+            {/* Header displaying brand */}
+            <div className="flex flex-col items-center text-center mb-6">
+              <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 rounded-2xl mb-4">
+                <ShieldCheck className="w-7 h-7" />
+              </div>
+              <h1 className="text-2xl font-black uppercase tracking-tight text-slate-100">
+                GuardianCam
+              </h1>
+              <span className="font-mono text-[9px] tracking-[0.25em] text-indigo-400 uppercase mt-1">
+                SECURE OPERATIONAL ENTRY
               </span>
             </div>
 
             {authError && (
-              <div className="mb-4 bg-red-500/15 border border-red-500/30 text-red-400 p-3 rounded-lg text-xs font-medium flex items-center gap-2">
-                <ShieldAlert className="w-4 h-4 shrink-0" />
-                <span>{authError}</span>
+              <div className="mb-4 bg-red-500/10 border border-red-500/20 text-red-400 p-3 rounded-xl text-xs font-mono flex items-start gap-2.5">
+                <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5" />
+                <span className="leading-relaxed">{authError}</span>
               </div>
             )}
 
+            {/* Custom visual tab selectors for modern UX */}
+            <div className="grid grid-cols-2 bg-slate-950 p-1 rounded-xl border border-slate-900 mb-5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRegistering(false);
+                  setAuthError("");
+                }}
+                className={`py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  !isRegistering 
+                    ? "bg-slate-800 text-slate-100 shadow" 
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Sign In
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRegistering(true);
+                  setAuthError("");
+                }}
+                className={`py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  isRegistering 
+                    ? "bg-slate-800 text-slate-100 shadow" 
+                    : "text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                Register
+              </button>
+            </div>
+
+            {/* Actual Credentials Form */}
             <form onSubmit={handleSupabaseSignIn} className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wide">SecOps Identity (Email)</label>
-                <div className="relative">
-                  <User className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] tracking-[0.15em] text-slate-500 uppercase">
+                  Identity Token (Email)
+                </label>
+                <div className="relative group">
+                  <User className="absolute left-3.5 top-3 w-4 h-4 text-slate-600 group-focus-within:text-indigo-400 transition-colors" />
                   <input
                     type="email"
                     value={authEmail}
                     onChange={(e) => setAuthEmail(e.target.value)}
                     placeholder="operator@guardiancam.com"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                    className="w-full bg-slate-950 border border-slate-900 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-800"
+                    required
                   />
                 </div>
               </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wide">Operational Secret (Password)</label>
-                <div className="relative">
-                  <Lock className="absolute left-3 top-2.5 w-4 h-4 text-slate-500" />
+              <div className="space-y-1.5">
+                <label className="block font-mono text-[10px] tracking-[0.15em] text-slate-500 uppercase">
+                  Security Secret (Password)
+                </label>
+                <div className="relative group">
+                  <Lock className="absolute left-3.5 top-3 w-4 h-4 text-slate-600 group-focus-within:text-indigo-400 transition-colors" />
                   <input
                     type="password"
                     value={authPassword}
                     onChange={(e) => setAuthPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-10 pr-4 py-2 text-sm text-slate-200 focus:outline-none focus:border-emerald-500 transition-colors"
+                    className="w-full bg-slate-950 border border-slate-900 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-100 font-mono focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder:text-slate-800"
+                    required
                   />
                 </div>
               </div>
@@ -740,55 +979,65 @@ maxVehicles: 2,
               <button
                 type="submit"
                 disabled={authLoading}
-                className="w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 py-2.5 rounded-lg text-xs font-black tracking-wider uppercase transition-all duration-300 flex items-center justify-center gap-2 shadow-lg hover:shadow-emerald-500/10 cursor-pointer"
+                className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-950 py-3 rounded-xl text-xs font-black tracking-wider uppercase transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer shadow-[0_0_20px_rgba(99,102,241,0.15)] hover:shadow-[0_0_25px_rgba(99,102,241,0.35)] disabled:opacity-50 disabled:pointer-events-none text-white"
               >
-                {authLoading ? "Initializing credentials..." : "ENGAGE SECURE ACCESS"}
+                {authLoading ? (
+                  <span className="flex items-center gap-1.5 font-mono text-[10px]">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    AUTHENTICATING...
+                  </span>
+                ) : isRegistering ? (
+                  "CREATE REGISTERED IDENTITY"
+                ) : (
+                  "ENGAGE CONTROL CONSOLE"
+                )}
               </button>
             </form>
 
-            <div className="relative my-6">
-              <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-800" /></div>
-              <div className="relative flex justify-center text-[10px] font-bold uppercase"><span className="bg-slate-900 px-3 text-slate-500">Demo Access Passes</span></div>
+            {/* 4. DEMO / OFFLINE BYPASS CREDENTIALS (INVALUABLE FOR UX & DEMO EVALUATION) */}
+            <div className="mt-6 pt-5 border-t border-slate-900 space-y-3 bg-slate-950/40 p-4 rounded-2xl border border-slate-900">
+              <div className="text-[9px] font-mono text-slate-500 uppercase tracking-widest font-bold flex items-center gap-1">
+                <Database className="w-3 h-3 text-emerald-400 animate-pulse" />
+                Demo Credentials Sandbox
+              </div>
+              <p className="text-[9px] text-slate-500 leading-relaxed font-mono">
+                Bypass database server and access full dashboard features as:
+              </p>
+              
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleDemoLogin("admin")}
+                  className="bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-900/30 text-indigo-400 rounded-lg py-1.5 text-[9px] font-mono uppercase tracking-wide cursor-pointer transition-all hover:scale-[1.02]"
+                >
+                  Admin
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDemoLogin("operator")}
+                  className="bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-900/30 text-indigo-400 rounded-lg py-1.5 text-[9px] font-mono uppercase tracking-wide cursor-pointer transition-all hover:scale-[1.02]"
+                >
+                  Operator
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleDemoLogin("inspector")}
+                  className="bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-900/30 text-indigo-400 rounded-lg py-1.5 text-[9px] font-mono uppercase tracking-wide cursor-pointer transition-all hover:scale-[1.02]"
+                >
+                  Inspector
+                </button>
+              </div>
             </div>
 
-            <div className="space-y-2.5">
-              <button
-                onClick={() => handleBypassLogin("admin")}
-                className="w-full bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 hover:border-indigo-500/40 py-2 rounded-lg text-xs font-semibold flex items-center justify-between px-4 transition-all duration-300 cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <Key className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>SecOps System Administrator</span>
-                </span>
-                <span className="text-[9px] font-mono text-slate-500">FULL ACCESS</span>
-              </button>
+          </section>
+        </main>
 
-              <button
-                onClick={() => handleBypassLogin("operator")}
-                className="w-full bg-emerald-600/10 hover:bg-emerald-600/20 text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/40 py-2 rounded-lg text-xs font-semibold flex items-center justify-between px-4 transition-all duration-300 cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <Cpu className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Command Center Operator</span>
-                </span>
-                <span className="text-[9px] font-mono text-slate-500">OPERATIONS ONLY</span>
-              </button>
-
-              <button
-                onClick={() => handleBypassLogin("inspector")}
-                className="w-full bg-yellow-600/10 hover:bg-yellow-600/20 text-yellow-400 border border-yellow-500/20 hover:border-yellow-500/40 py-2 rounded-lg text-xs font-semibold flex items-center justify-between px-4 transition-all duration-300 cursor-pointer"
-              >
-                <span className="flex items-center gap-2">
-                  <FileCheck className="w-3.5 h-3.5 text-yellow-400" />
-                  <span>Florida GIBMP Inspector</span>
-                </span>
-                <span className="text-[9px] font-mono text-slate-500">COMPLIANCE ONLY</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <footer className="border-t border-slate-900 bg-slate-950 p-4 text-center text-[10px] text-slate-600 font-mono">
-          SECURE PROTOCOL 3000 &bull; GUARDIANCAM COGNITIVE INCIDENT DEFENSE ENGINE
+        <footer className="relative z-20 border-t border-slate-900 bg-slate-950 px-8 py-4 flex flex-col md:flex-row justify-between items-center font-mono text-[9px] tracking-wider text-slate-500 gap-2">
+          <span>SECURE SYSTEM INTERFACE • GUARDIANCAM ENTERPRISE MONITORING NETWORK</span>
+          <span className="flex items-center gap-1.5 text-emerald-500">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+            STANDBY PORT 3000
+          </span>
         </footer>
       </div>
     );
@@ -858,6 +1107,18 @@ maxVehicles: 2,
         
         {/* TABS NAVIGATION BAR */}
         <nav className="bg-slate-900 border border-slate-800 p-1 rounded-xl flex flex-wrap gap-1 shadow-inner">
+          <button
+            onClick={() => setActiveTab("dashboard")}
+            className={`px-4 py-2.5 rounded-lg text-xs font-semibold tracking-wide flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === "dashboard"
+                ? "bg-slate-800 text-slate-100 shadow"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <LayoutDashboard className="w-4 h-4 text-emerald-400" />
+            Dashboard
+          </button>
+
           {(user.role === "admin" || user.role === "operator") && (
             <button
               onClick={() => setActiveTab("command")}
@@ -959,6 +1220,21 @@ maxVehicles: 2,
 
         {/* ACTIVE TABS VIEW CONTROLLER */}
         <div className="flex-1 min-h-[500px]">
+          {activeTab === "dashboard" && (
+            <DashboardOverview
+              devices={devices}
+              alerts={alerts}
+              aiEvents={aiEvents}
+              complianceRecords={complianceRecords}
+              billingConfig={billingConfig}
+              user={user}
+              onNavigateToTab={(tab) => setActiveTab(tab)}
+              onTriggerGlobalSiren={handleTriggerGlobalSiren}
+              globalSirenActive={globalSirenActive}
+              onTriggerAlert={handleTriggerAlert}
+            />
+          )}
+
           {activeTab === "command" && (user.role === "admin" || user.role === "operator") && (
             <CommandCenter
               devices={devices}

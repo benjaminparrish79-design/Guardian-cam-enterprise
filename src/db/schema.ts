@@ -1,4 +1,4 @@
-import { pgTable, text, integer, boolean, doublePrecision, timestamp, uuid, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, boolean, doublePrecision, timestamp, uuid, jsonb, index } from "drizzle-orm/pg-core";
 
 // 1. Organizations (Multi-tenant structure)
 export const organizations = pgTable("organizations", {
@@ -14,7 +14,9 @@ export const users = pgTable("users", {
   role: text("role").default("operator").notNull(), // 'admin' | 'operator' | 'inspector'
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+}, (table) => ({
+  usersOrgIdIdx: index("users_org_id_idx").on(table.organizationId),
+}));
 
 // 3. Unified Devices (Cameras & Vehicles)
 export const devices = pgTable("devices", {
@@ -38,7 +40,9 @@ export const devices = pgTable("devices", {
   speed: integer("speed"),
   licensePlate: text("license_plate"),
   driverName: text("driver_name"),
-});
+}, (table) => ({
+  devicesOrgIdIdx: index("devices_org_id_idx").on(table.organizationId),
+}));
 
 // 4. Ingested Security Threat Alerts
 export const alerts = pgTable("alerts", {
@@ -51,8 +55,11 @@ export const alerts = pgTable("alerts", {
   description: text("description").notNull(),
   objectsDetected: jsonb("objects_detected").default([]),
   resolved: boolean("resolved").default(false).notNull(),
+  simulated: boolean("simulated").default(false).notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
+}, (table) => ({
+  alertsOrgIdIdx: index("alerts_org_id_idx").on(table.organizationId),
+}));
 
 // 5. Florida GIBMP Compliance Records
 export const complianceRecords = pgTable("compliance_records", {
@@ -65,7 +72,9 @@ export const complianceRecords = pgTable("compliance_records", {
   notes: text("notes"),
   checklist: jsonb("checklist").notNull(), // { fertilizerRules: boolean, ... }
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
+}, (table) => ({
+  complianceOrgIdIdx: index("compliance_org_id_idx").on(table.organizationId),
+}));
 
 // 6. Synthetic Scenarios
 export const scenarios = pgTable("scenarios", {
@@ -77,7 +86,9 @@ export const scenarios = pgTable("scenarios", {
   model: text("model").notNull(),
   timestamp: text("timestamp").notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
+}, (table) => ({
+  scenariosOrgIdIdx: index("scenarios_org_id_idx").on(table.organizationId),
+}));
 
 // 7. SaaS Billing Configuration & Limits
 export const billingConfigs = pgTable("billing_configs", {
@@ -100,9 +111,14 @@ export const aiEvents = pgTable("ai_events", {
   description: text("description").notNull(),
   objectsDetected: jsonb("objects_detected").default([]).notNull(),
   boundingBoxes: jsonb("bounding_boxes").default([]),
+  resolved: boolean("resolved").default(false).notNull(),
+  simulated: boolean("simulated").default(false).notNull(),
   timestamp: timestamp("timestamp").defaultNow().notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
+}, (table) => ({
+  aiEvtOrgIdIdx: index("ai_evt_org_id_idx").on(table.organizationId),
+  aiEvtTimestampIdx: index("ai_evt_timestamp_idx").on(table.timestamp),
+}));
 
 // 9. Compliance Remediation Work Orders
 export const workOrders = pgTable("work_orders", {
@@ -116,7 +132,10 @@ export const workOrders = pgTable("work_orders", {
   dueDate: text("due_date").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
+}, (table) => ({
+  workOrdersOrgIdIdx: index("work_orders_org_id_idx").on(table.organizationId),
+  workOrdersCreatedAtIdx: index("work_orders_created_at_idx").on(table.createdAt),
+}));
 
 // 10. Audit Logs
 export const auditLogs = pgTable("audit_logs", {
@@ -127,5 +146,7 @@ export const auditLogs = pgTable("audit_logs", {
   details: text("details").notNull(),
   timestamp: timestamp("timestamp").defaultNow().notNull(),
   organizationId: uuid("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
-});
-
+}, (table) => ({
+  auditLogsOrgIdIdx: index("audit_logs_org_id_idx").on(table.organizationId),
+  auditLogsTimestampIdx: index("audit_logs_timestamp_idx").on(table.timestamp),
+}));

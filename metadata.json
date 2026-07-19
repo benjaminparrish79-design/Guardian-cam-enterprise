@@ -1,7 +1,7 @@
 {
   "name": "GuardianCam Enterprise",
   "description": "Enterprise Unified Security Operations (SecOps) platform combining AI video surveillance, remote fleet tracking, Florida GIBMP environmental compliance checklists, and AI scenario threat image synthesis.",
-  "requestFramePermissions": [],
+  "requestFramePermissions": ["camera"],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

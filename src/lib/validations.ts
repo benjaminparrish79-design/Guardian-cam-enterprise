@@ -106,3 +106,39 @@ export const workOrderSchema = z.object({
   complianceRecordId: z.string().optional(),
   dueDate: z.string(),
 });
+
+/**
+ * Validates AI prompts for character limits and keyword-based safety policies.
+ * Prevents prompt injection, malicious exploitation, and excessive generation costs.
+ */
+export function validateAIPrompt(prompt?: string): { success: boolean; error?: string } {
+  if (!prompt) return { success: true };
+  
+  // Strict prompt length limit (500 characters)
+  if (prompt.length > 500) {
+    return {
+      success: false,
+      error: "Prompt exceeds maximum security policy threshold of 500 characters.",
+    };
+  }
+
+  // Safety blocklist covering standard exploits, injections, and inappropriate generation
+  const safetyBlocklist = [
+    "bypass", "exploit", "hack", "virus", "malware", "credential", "password",
+    "private key", "auth token", "admin override", "system prompt", "ignore instructions",
+    "harmful", "weapon", "bomb", "destroy", "kill", "attack", "abuse"
+  ];
+
+  const lowerPrompt = prompt.toLowerCase();
+  for (const phrase of safetyBlocklist) {
+    if (lowerPrompt.includes(phrase)) {
+      return {
+        success: false,
+        error: `Prompt contains a term or phrase restricted by safety policies: "${phrase}".`,
+      };
+    }
+  }
+
+  return { success: true };
+}
+

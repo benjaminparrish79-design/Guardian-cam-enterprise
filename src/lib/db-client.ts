@@ -1,14 +1,18 @@
 import { db } from "@/db";
-import { devices, alerts, aiEvents, billingConfigs, organizations, complianceRecords, workOrders } from "@/db/schema";
+import { 
+  devices, 
+  alerts, 
+  aiEvents, 
+  billingConfigs, 
+  organizations, 
+  complianceRecords, 
+  workOrders 
+} from "@/db/schema";
 import { eq, and } from "drizzle-orm";
-import fs from "fs";
-import path from "path";
-import { getOrganizationId } from "@/lib/supabase";
+import { getOrganizationId } from "@/lib/supabase-server";
 
 // Types
 import { Device, SecurityAlert, AIEvent, BillingConfig, ComplianceRecord } from "@/types";
-
-const FALLBACK_FILE_PATH = "/tmp/guardiancam_db.json";
 
 // Default Initial Seed Data
 const DEFAULT_DEVICES: Device[] = [
@@ -124,144 +128,120 @@ const DEFAULT_COMPLIANCE: any[] = [
   }
 ];
 
-const DEFAULT_WORK_ORDERS: any[] = [];
-
-interface FullState {
-  devices: Device[];
-  alerts: SecurityAlert[];
-  aiEvents: AIEvent[];
-  billing: BillingConfig;
-  compliance?: any[];
-  workOrders?: any[];
-}
-
-// Read/write from local file fallback
-function getFallbackState(): FullState {
-  try {
-    if (fs.existsSync(FALLBACK_FILE_PATH)) {
-      const data = fs.readFileSync(FALLBACK_FILE_PATH, "utf-8");
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error("Failed to read fallback file state", err);
+// Helper to ensure database client is connected
+function getDb() {
+  if (!db) {
+    throw new Error("DATABASE_URL environment variable is not configured. Please supply a valid database connection string.");
   }
-  
-  const defaultState: FullState = {
-    devices: DEFAULT_DEVICES,
-    alerts: DEFAULT_ALERTS,
-    aiEvents: DEFAULT_AI_EVENTS,
-    billing: DEFAULT_BILLING,
-    compliance: DEFAULT_COMPLIANCE,
-    workOrders: DEFAULT_WORK_ORDERS
-  };
-  saveFallbackState(defaultState);
-  return defaultState;
+  return db;
 }
 
-function saveFallbackState(state: FullState) {
+// Helper to ensure organization exists to prevent foreign key issues
+async function ensureOrgExists(orgId: string): Promise<string> {
+  const database = getDb();
   try {
-    fs.writeFileSync(FALLBACK_FILE_PATH, JSON.stringify(state, null, 2), "utf-8");
-  } catch (err) {
-    console.error("Failed to write fallback file state", err);
-  }
-}
-
-// Helpers for Drizzle organization ID
-async function getOrCreateOrgId(): Promise<string> {
-  const defaultOrgUuid = "00000000-0000-0000-0000-000000000000";
-  if (!db) return defaultOrgUuid;
-  try {
-    const existing = await db.select().from(organizations).limit(1);
+    const existing = await database.select().from(organizations).where(eq(organizations.id, orgId)).limit(1);
     if (existing.length > 0) {
       return existing[0].id;
     }
-    const created = await db.insert(organizations).values({
-      id: defaultOrgUuid,
-      name: "Tampa Secure CommandCenter"
+    const created = await database.insert(organizations).values({
+      id: orgId,
+      name: "GuardianCam Secure CommandCenter"
     }).returning();
     return created[0].id;
   } catch (e) {
-    return defaultOrgUuid;
+    console.error("ensureOrgExists failed, proceeding with default", e);
+    return orgId;
   }
 }
 
 export const dbClient = {
   // === Devices Operations ===
   async getDevices(organizationId?: string): Promise<Device[]> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      const state = getFallbackState();
-      state.devices.forEach(d => {
-        if (!(d as any).organizationId) (d as any).organizationId = "00000000-0000-0000-0000-000000000000";
-      });
-      return state.devices.filter(d => (d as any).organizationId === orgId);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(devices).where(eq(devices.organizationId, orgId));
+    await ensureOrgExists(orgId);
 
-      if (rows.length === 0) {
-        // Seed database for organization
-        await db.insert(devices).values(
-          DEFAULT_DEVICES.map(d => ({
-            id: d.id,
-            name: d.name,
-            type: d.type,
-            status: d.status,
-            battery: d.battery || null,
-            signal: d.signal,
-            latitude: d.latitude,
-            longitude: d.longitude,
-            lastActive: d.lastActive,
-            sirenOn: d.sirenOn || false,
-            lightOn: d.lightOn || false,
-            recording: d.recording || false,
-            speed: d.speed || null,
-            licensePlate: d.licensePlate || null,
-            driverName: d.driverName || null,
-            organizationId: orgId
-          }))
-        );
-        return DEFAULT_DEVICES.map(d => ({ ...d, organizationId: orgId } as any));
-      }
-      return rows.map(r => ({
-        id: r.id,
-        name: r.name,
-        type: r.type as "camera" | "vehicle",
-        status: r.status as "online" | "offline" | "alerting",
-        battery: r.battery ?? undefined,
-        signal: r.signal as any,
-        latitude: r.latitude,
-        longitude: r.longitude,
-        lastActive: r.lastActive,
-        sirenOn: r.sirenOn ?? undefined,
-        lightOn: r.lightOn ?? undefined,
-        recording: r.recording ?? undefined,
-        speed: r.speed ?? undefined,
-        licensePlate: r.licensePlate ?? undefined,
-        driverName: r.driverName ?? undefined,
-        organizationId: r.organizationId || undefined
-      }));
-    } catch (err) {
-      console.warn("DB getDevices failed, falling back", err);
-      return getFallbackState().devices.filter(d => !(d as any).organizationId || (d as any).organizationId === orgId);
+    const rows = await database.select().from(devices).where(eq(devices.organizationId, orgId));
+
+    if (rows.length === 0) {
+      // Seed database for organization
+      await database.insert(devices).values(
+        DEFAULT_DEVICES.map(d => ({
+          id: d.id,
+          name: d.name,
+          type: d.type,
+          status: d.status,
+          battery: d.battery || null,
+          signal: d.signal,
+          latitude: d.latitude,
+          longitude: d.longitude,
+          lastActive: d.lastActive,
+          sirenOn: d.sirenOn || false,
+          lightOn: d.lightOn || false,
+          recording: d.recording || false,
+          speed: d.speed || null,
+          licensePlate: d.licensePlate || null,
+          driverName: d.driverName || null,
+          organizationId: orgId
+        }))
+      );
+      return DEFAULT_DEVICES.map(d => ({ ...d, organizationId: orgId } as any));
     }
+
+    return rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      type: r.type as "camera" | "vehicle",
+      status: r.status as "online" | "offline" | "alerting",
+      battery: r.battery ?? undefined,
+      signal: r.signal as any,
+      latitude: r.latitude,
+      longitude: r.longitude,
+      lastActive: r.lastActive,
+      sirenOn: r.sirenOn ?? undefined,
+      lightOn: r.lightOn ?? undefined,
+      recording: r.recording ?? undefined,
+      speed: r.speed ?? undefined,
+      licensePlate: r.licensePlate ?? undefined,
+      driverName: r.driverName ?? undefined,
+      organizationId: r.organizationId || undefined
+    }));
   },
 
   async addDevice(device: Device, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    const withOrg = { ...device, organizationId: orgId };
-    if (!state.devices.some(d => d.id === device.id)) {
-      state.devices.push(withOrg as any);
-      saveFallbackState(state);
-    } else {
-      state.devices = state.devices.map(d => d.id === device.id ? (withOrg as any) : d);
-      saveFallbackState(state);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    await ensureOrgExists(orgId);
 
-    if (!db) return;
-    try {
-      await db.insert(devices).values({
+    const existing = await database.select().from(devices).where(and(eq(devices.id, device.id), eq(devices.organizationId, orgId)));
+    if (existing.length > 0) {
+      await database.update(devices)
+        .set({
+          name: device.name,
+          type: device.type,
+          status: device.status,
+          battery: device.battery || null,
+          signal: device.signal,
+          latitude: device.latitude,
+          longitude: device.longitude,
+          lastActive: device.lastActive,
+          sirenOn: device.sirenOn || false,
+          lightOn: device.lightOn || false,
+          recording: device.recording || false,
+          speed: device.speed || null,
+          licensePlate: device.licensePlate || null,
+          driverName: device.driverName || null
+        })
+        .where(and(eq(devices.id, device.id), eq(devices.organizationId, orgId)));
+    } else {
+      await database.insert(devices).values({
         id: device.id,
         name: device.name,
         type: device.type,
@@ -279,117 +259,117 @@ export const dbClient = {
         driverName: device.driverName || null,
         organizationId: orgId
       });
-    } catch (err) {
-      console.warn("DB addDevice failed", err);
     }
   },
 
   async updateDevice(id: string, updatedFields: Partial<Device>, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    state.devices = state.devices.map(d => d.id === id ? { ...d, ...updatedFields, organizationId: orgId } : d);
-    saveFallbackState(state);
-
-    if (!db) return;
-    try {
-      const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
-
-      await db.update(devices)
-        .set({
-          name: updatedFields.name,
-          status: updatedFields.status,
-          battery: updatedFields.battery !== undefined ? updatedFields.battery : undefined,
-          signal: updatedFields.signal,
-          latitude: updatedFields.latitude !== undefined ? updatedFields.latitude : undefined,
-          longitude: updatedFields.longitude !== undefined ? updatedFields.longitude : undefined,
-          lastActive: updatedFields.lastActive,
-          sirenOn: updatedFields.sirenOn !== undefined ? updatedFields.sirenOn : undefined,
-          lightOn: updatedFields.lightOn !== undefined ? updatedFields.lightOn : undefined,
-          recording: updatedFields.recording !== undefined ? updatedFields.recording : undefined,
-          speed: updatedFields.speed !== undefined ? updatedFields.speed : undefined,
-          licensePlate: updatedFields.licensePlate,
-          driverName: updatedFields.driverName
-        })
-        .where(condition);
-    } catch (err) {
-      console.warn("DB updateDevice failed", err);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    await ensureOrgExists(orgId);
+
+    const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
+    await database.update(devices)
+      .set({
+        name: updatedFields.name,
+        status: updatedFields.status,
+        battery: updatedFields.battery !== undefined ? updatedFields.battery : undefined,
+        signal: updatedFields.signal,
+        latitude: updatedFields.latitude !== undefined ? updatedFields.latitude : undefined,
+        longitude: updatedFields.longitude !== undefined ? updatedFields.longitude : undefined,
+        lastActive: updatedFields.lastActive,
+        sirenOn: updatedFields.sirenOn !== undefined ? updatedFields.sirenOn : undefined,
+        lightOn: updatedFields.lightOn !== undefined ? updatedFields.lightOn : undefined,
+        recording: updatedFields.recording !== undefined ? updatedFields.recording : undefined,
+        speed: updatedFields.speed !== undefined ? updatedFields.speed : undefined,
+        licensePlate: updatedFields.licensePlate,
+        driverName: updatedFields.driverName
+      })
+      .where(condition);
   },
 
   async deleteDevice(id: string, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    state.devices = state.devices.filter(d => d.id !== id);
-    saveFallbackState(state);
-
-    if (!db) return;
-    try {
-      const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
-      await db.delete(devices).where(condition);
-    } catch (err) {
-      console.warn("DB deleteDevice failed", err);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    const condition = and(eq(devices.id, id), eq(devices.organizationId, orgId));
+    await database.delete(devices).where(condition);
   },
 
   // === Alerts Operations ===
   async getAlerts(organizationId?: string): Promise<SecurityAlert[]> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      const state = getFallbackState();
-      state.alerts.forEach(a => {
-        if (!(a as any).organizationId) (a as any).organizationId = "00000000-0000-0000-0000-000000000000";
-      });
-      return state.alerts.filter(a => (a as any).organizationId === orgId);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(alerts).where(eq(alerts.organizationId, orgId));
-      if (rows.length === 0) {
-        // Seed database
-        await db.insert(alerts).values(
-          DEFAULT_ALERTS.map(a => ({
-            id: a.id,
-            deviceId: a.deviceId,
-            deviceName: a.deviceName,
-            timestamp: a.timestamp,
-            severity: a.severity,
-            message: a.message,
-            description: a.description,
-            objectsDetected: a.objectsDetected,
-            resolved: a.resolved,
-            organizationId: orgId
-          }))
-        );
-        return DEFAULT_ALERTS.map(a => ({ ...a, organizationId: orgId } as any));
-      }
-      return rows.map(r => ({
-        id: r.id,
-        deviceId: r.deviceId || "",
-        deviceName: r.deviceName,
-        timestamp: r.timestamp,
-        severity: r.severity as any,
-        message: r.message,
-        description: r.description,
-        objectsDetected: (r.objectsDetected as string[]) || [],
-        resolved: r.resolved,
-        organizationId: r.organizationId || undefined
-      }));
-    } catch (err) {
-      console.warn("DB getAlerts failed, falling back", err);
-      return getFallbackState().alerts.filter(a => !(a as any).organizationId || (a as any).organizationId === orgId);
+    await ensureOrgExists(orgId);
+
+    const rows = await database.select().from(alerts).where(eq(alerts.organizationId, orgId));
+    if (rows.length === 0) {
+      await database.insert(alerts).values(
+        DEFAULT_ALERTS.map(a => ({
+          id: a.id,
+          deviceId: a.deviceId,
+          deviceName: a.deviceName,
+          timestamp: a.timestamp,
+          severity: a.severity,
+          message: a.message,
+          description: a.description,
+          objectsDetected: a.objectsDetected,
+          resolved: a.resolved,
+          organizationId: orgId
+        }))
+      );
+      return DEFAULT_ALERTS.map(a => ({ ...a, organizationId: orgId } as any));
     }
+
+    return rows.map(r => ({
+      id: r.id,
+      deviceId: r.deviceId || "",
+      deviceName: r.deviceName,
+      timestamp: r.timestamp,
+      severity: r.severity as any,
+      message: r.message,
+      description: r.description,
+      objectsDetected: (r.objectsDetected as string[]) || [],
+      resolved: r.resolved,
+      simulated: (r as any).simulated || false,
+      organizationId: r.organizationId || undefined
+    }));
   },
 
   async addAlert(alert: SecurityAlert, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    const withOrg = { ...alert, organizationId: orgId };
-    state.alerts = [withOrg as any, ...state.alerts];
-    saveFallbackState(state);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
 
-    if (!db) return;
-    try {
-      await db.insert(alerts).values({
-        id: alert.id,
+    const alertId = alert.id || `alert-${crypto.randomUUID()}`;
+
+    const existing = await database.select().from(alerts).where(and(eq(alerts.id, alertId), eq(alerts.organizationId, orgId)));
+    if (existing.length > 0) {
+      await database.update(alerts)
+        .set({
+          deviceId: alert.deviceId,
+          deviceName: alert.deviceName,
+          timestamp: alert.timestamp,
+          severity: alert.severity,
+          message: alert.message,
+          description: alert.description,
+          objectsDetected: alert.objectsDetected,
+          resolved: alert.resolved
+        })
+        .where(and(eq(alerts.id, alertId), eq(alerts.organizationId, orgId)));
+    } else {
+      await database.insert(alerts).values({
+        id: alertId,
         deviceId: alert.deviceId,
         deviceName: alert.deviceName,
         timestamp: alert.timestamp,
@@ -400,257 +380,276 @@ export const dbClient = {
         resolved: alert.resolved,
         organizationId: orgId
       });
-    } catch (err) {
-      console.warn("DB addAlert failed", err);
     }
   },
 
   async updateAlert(id: string, updatedFields: Partial<SecurityAlert>, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    state.alerts = state.alerts.map(a => a.id === id ? { ...a, ...updatedFields, organizationId: orgId } : a);
-    saveFallbackState(state);
-
-    if (!db) return;
-    try {
-      const condition = and(eq(alerts.id, id), eq(alerts.organizationId, orgId));
-      await db.update(alerts)
-        .set({
-          resolved: updatedFields.resolved !== undefined ? updatedFields.resolved : undefined,
-          severity: updatedFields.severity,
-          message: updatedFields.message,
-          description: updatedFields.description
-        })
-        .where(condition);
-    } catch (err) {
-      console.warn("DB updateAlert failed", err);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    await ensureOrgExists(orgId);
+
+    const condition = and(eq(alerts.id, id), eq(alerts.organizationId, orgId));
+    await database.update(alerts)
+      .set({
+        resolved: updatedFields.resolved !== undefined ? updatedFields.resolved : undefined,
+        severity: updatedFields.severity,
+        message: updatedFields.message,
+        description: updatedFields.description,
+        objectsDetected: updatedFields.objectsDetected
+      })
+      .where(condition);
+  },
+
+  async deleteAlert(id: string, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    const condition = and(eq(alerts.id, id), eq(alerts.organizationId, orgId));
+    await database.delete(alerts).where(condition);
   },
 
   // === AI Machine Vision Events ===
   async getAIEvents(organizationId?: string): Promise<AIEvent[]> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      const state = getFallbackState();
-      state.aiEvents.forEach(e => {
-        if (!(e as any).organizationId) (e as any).organizationId = "00000000-0000-0000-0000-000000000000";
-      });
-      return state.aiEvents.filter(e => (e as any).organizationId === orgId);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
-      if (rows.length === 0) {
-        // Seed database
-        await db.insert(aiEvents).values(
-          DEFAULT_AI_EVENTS.map(e => ({
-            deviceId: e.deviceId,
-            imageUrl: e.imageUrl,
-            prompt: e.prompt,
-            threatLevel: e.threatLevel,
-            description: e.description,
-            objectsDetected: e.objectsDetected,
-            boundingBoxes: e.boundingBoxes,
-            organizationId: orgId
-          }))
-        );
-        // Re-read with actual IDs
-        const seeded = await db.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
-        return seeded.map(r => ({
-          id: r.id,
-          deviceId: r.deviceId || "",
-          deviceName: DEFAULT_DEVICES.find(d => d.id === r.deviceId)?.name || "Secure Endpoint",
-          imageUrl: r.imageUrl,
-          prompt: r.prompt || "",
-          threatLevel: r.threatLevel as any,
-          description: r.description,
-          objectsDetected: (r.objectsDetected as string[]) || [],
-          boundingBoxes: (r.boundingBoxes as any[]) || undefined,
-          timestamp: r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric" }) + " AM",
-          resolved: (r as any).resolved || false,
-          organizationId: r.organizationId || undefined
-        }));
-      }
-      return rows.map(r => ({
+    await ensureOrgExists(orgId);
+
+    const rows = await database.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
+    if (rows.length === 0) {
+      await database.insert(aiEvents).values(
+        DEFAULT_AI_EVENTS.map(e => ({
+          deviceId: e.deviceId,
+          imageUrl: e.imageUrl,
+          prompt: e.prompt,
+          threatLevel: e.threatLevel,
+          description: e.description,
+          objectsDetected: e.objectsDetected,
+          boundingBoxes: e.boundingBoxes,
+          organizationId: orgId
+        }))
+      );
+      
+      const seeded = await database.select().from(aiEvents).where(eq(aiEvents.organizationId, orgId));
+      return seeded.map(r => ({
         id: r.id,
         deviceId: r.deviceId || "",
-        deviceName: DEFAULT_DEVICES.find(d => d.id === r.deviceId)?.name || "Surveillance Stream",
+        deviceName: DEFAULT_DEVICES.find(d => d.id === r.deviceId)?.name || "Secure Endpoint",
         imageUrl: r.imageUrl,
         prompt: r.prompt || "",
         threatLevel: r.threatLevel as any,
         description: r.description,
         objectsDetected: (r.objectsDetected as string[]) || [],
         boundingBoxes: (r.boundingBoxes as any[]) || undefined,
-        timestamp: r.timestamp ? r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric", hour12: true }) : "Just now",
+        timestamp: r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric", hour12: true }),
         resolved: (r as any).resolved || false,
+        simulated: (r as any).simulated || false,
         organizationId: r.organizationId || undefined
       }));
-    } catch (err) {
-      console.warn("DB getAIEvents failed, falling back", err);
-      return getFallbackState().aiEvents.filter(e => !(e as any).organizationId || (e as any).organizationId === orgId);
     }
+
+    return rows.map(r => ({
+      id: r.id,
+      deviceId: r.deviceId || "",
+      deviceName: DEFAULT_DEVICES.find(d => d.id === r.deviceId)?.name || "Surveillance Stream",
+      imageUrl: r.imageUrl,
+      prompt: r.prompt || "",
+      threatLevel: r.threatLevel as any,
+      description: r.description,
+      objectsDetected: (r.objectsDetected as string[]) || [],
+      boundingBoxes: (r.boundingBoxes as any[]) || undefined,
+      timestamp: r.timestamp ? r.timestamp.toLocaleTimeString("en-US", { hour: "numeric", minute: "numeric", hour12: true }) : "Just now",
+      resolved: (r as any).resolved || false,
+      simulated: (r as any).simulated || false,
+      organizationId: r.organizationId || undefined
+    }));
   },
 
   async addAIEvent(event: AIEvent, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    const withOrg = { ...event, organizationId: orgId };
-    state.aiEvents = [withOrg as any, ...state.aiEvents];
-    saveFallbackState(state);
-
-    if (!db) return;
-    try {
-      await db.insert(aiEvents).values({
-        deviceId: event.deviceId,
-        imageUrl: event.imageUrl,
-        prompt: event.prompt,
-        threatLevel: event.threatLevel,
-        description: event.description,
-        objectsDetected: event.objectsDetected,
-        boundingBoxes: event.boundingBoxes,
-        organizationId: orgId
-      });
-    } catch (err) {
-      console.warn("DB addAIEvent failed", err);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    await ensureOrgExists(orgId);
+
+    await database.insert(aiEvents).values({
+      deviceId: event.deviceId,
+      imageUrl: event.imageUrl,
+      prompt: event.prompt,
+      threatLevel: event.threatLevel,
+      description: event.description,
+      objectsDetected: event.objectsDetected,
+      boundingBoxes: event.boundingBoxes,
+      simulated: event.simulated || false,
+      organizationId: orgId
+    });
   },
 
   async updateAIEvent(id: string, resolved: boolean, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    state.aiEvents = state.aiEvents.map(e => e.id === id ? { ...e, resolved, organizationId: orgId } : e);
-    saveFallbackState(state);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
+
+    // AI Events has uuid pk, let's parse or match string directly
+    const condition = and(eq(aiEvents.id, id), eq(aiEvents.organizationId, orgId));
+    await database.update(aiEvents)
+      .set({ resolved })
+      .where(condition);
+  },
+
+  async deleteAIEvent(id: string, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    const condition = and(eq(aiEvents.id, id), eq(aiEvents.organizationId, orgId));
+    await database.delete(aiEvents).where(condition);
   },
 
   // === Billing Configuration Operations ===
   async getBillingConfig(organizationId?: string): Promise<BillingConfig> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      return getFallbackState().billing;
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
-      if (rows.length === 0) {
-        // Seed billing configuration for organization
-        await db.insert(billingConfigs).values({
-          organizationId: orgId,
-          tierName: DEFAULT_BILLING.tierName,
-          price: DEFAULT_BILLING.price,
-          maxCameras: DEFAULT_BILLING.maxCameras,
-          maxVehicles: DEFAULT_BILLING.maxVehicles,
-          maxProperties: DEFAULT_BILLING.maxProperties,
-          unlockedFeatures: DEFAULT_BILLING.unlockedFeatures
-        });
-        return DEFAULT_BILLING;
-      }
-      return {
-        tierName: rows[0].tierName as any,
-        price: rows[0].price,
-        maxCameras: rows[0].maxCameras,
-        maxVehicles: rows[0].maxVehicles,
-        maxProperties: rows[0].maxProperties,
-        unlockedFeatures: (rows[0].unlockedFeatures as string[]) || []
-      };
-    } catch (err) {
-      console.warn("DB getBillingConfig failed, falling back", err);
-      return getFallbackState().billing;
+    await ensureOrgExists(orgId);
+
+    const rows = await database.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
+    if (rows.length === 0) {
+      await database.insert(billingConfigs).values({
+        organizationId: orgId,
+        tierName: DEFAULT_BILLING.tierName,
+        price: DEFAULT_BILLING.price,
+        maxCameras: DEFAULT_BILLING.maxCameras,
+        maxVehicles: DEFAULT_BILLING.maxVehicles,
+        maxProperties: DEFAULT_BILLING.maxProperties,
+        unlockedFeatures: DEFAULT_BILLING.unlockedFeatures
+      });
+      return DEFAULT_BILLING;
     }
+
+    return {
+      tierName: rows[0].tierName as any,
+      price: rows[0].price,
+      maxCameras: rows[0].maxCameras,
+      maxVehicles: rows[0].maxVehicles,
+      maxProperties: rows[0].maxProperties,
+      unlockedFeatures: (rows[0].unlockedFeatures as string[]) || []
+    };
   },
 
   async updateBillingConfig(config: BillingConfig, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    state.billing = config;
-    saveFallbackState(state);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
 
-    if (!db) return;
-    try {
-      // Try to update or insert if not exists
-      const existing = await db.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
-      if (existing.length > 0) {
-        await db.update(billingConfigs)
-          .set({
-            tierName: config.tierName,
-            price: config.price,
-            maxCameras: config.maxCameras,
-            maxVehicles: config.maxVehicles,
-            maxProperties: config.maxProperties,
-            unlockedFeatures: config.unlockedFeatures
-          })
-          .where(eq(billingConfigs.organizationId, orgId));
-      } else {
-        await db.insert(billingConfigs).values({
-          organizationId: orgId,
+    const existing = await database.select().from(billingConfigs).where(eq(billingConfigs.organizationId, orgId));
+    if (existing.length > 0) {
+      await database.update(billingConfigs)
+        .set({
           tierName: config.tierName,
           price: config.price,
           maxCameras: config.maxCameras,
           maxVehicles: config.maxVehicles,
           maxProperties: config.maxProperties,
           unlockedFeatures: config.unlockedFeatures
-        });
-      }
-    } catch (err) {
-      console.warn("DB updateBillingConfig failed", err);
+        })
+        .where(eq(billingConfigs.organizationId, orgId));
+    } else {
+      await database.insert(billingConfigs).values({
+        organizationId: orgId,
+        tierName: config.tierName,
+        price: config.price,
+        maxCameras: config.maxCameras,
+        maxVehicles: config.maxVehicles,
+        maxProperties: config.maxProperties,
+        unlockedFeatures: config.unlockedFeatures
+      });
     }
   },
 
+  // === GIBMP Compliance Operations ===
   async getComplianceRecords(organizationId?: string): Promise<any[]> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      const state = getFallbackState();
-      const records = state.compliance || [];
-      records.forEach(r => {
-        if (!(r as any).organizationId) (r as any).organizationId = "00000000-0000-0000-0000-000000000000";
-      });
-      return records.filter(r => (r as any).organizationId === orgId);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(complianceRecords).where(eq(complianceRecords.organizationId, orgId));
-      if (rows.length === 0) {
-        // Seed the compliance records table
-        await db.insert(complianceRecords).values(
-          DEFAULT_COMPLIANCE.map(r => ({
-            id: r.id,
-            propertyName: r.propertyName,
-            inspector: r.inspector,
-            date: r.date,
-            score: r.score,
-            status: r.status,
-            notes: r.notes,
-            checklist: r.checklist,
-            organizationId: orgId
-          }))
-        );
-        return DEFAULT_COMPLIANCE.map(r => ({ ...r, organizationId: orgId }));
-      }
-      return rows.map(r => ({
-        id: r.id,
-        propertyName: r.propertyName,
-        inspector: r.inspector,
-        date: r.date,
-        score: r.score,
-        status: r.status as any,
-        notes: r.notes || "",
-        checklist: r.checklist as any,
-        organizationId: r.organizationId || undefined
-      }));
-    } catch (err) {
-      console.warn("DB getComplianceRecords failed, falling back", err);
-      const records = getFallbackState().compliance || [];
-      return records.filter(r => !(r as any).organizationId || (r as any).organizationId === orgId);
+    await ensureOrgExists(orgId);
+
+    const rows = await database.select().from(complianceRecords).where(eq(complianceRecords.organizationId, orgId));
+    if (rows.length === 0) {
+      await database.insert(complianceRecords).values(
+        DEFAULT_COMPLIANCE.map(r => ({
+          id: r.id,
+          propertyName: r.propertyName,
+          inspector: r.inspector,
+          date: r.date,
+          score: r.score,
+          status: r.status,
+          notes: r.notes,
+          checklist: r.checklist,
+          organizationId: orgId
+        }))
+      );
+      return DEFAULT_COMPLIANCE.map(r => ({ ...r, organizationId: orgId }));
     }
+
+    return rows.map(r => ({
+      id: r.id,
+      propertyName: r.propertyName,
+      inspector: r.inspector,
+      date: r.date,
+      score: r.score,
+      status: r.status as any,
+      notes: r.notes || "",
+      checklist: r.checklist as any,
+      organizationId: r.organizationId || undefined
+    }));
   },
 
   async addComplianceRecord(record: any, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    const withOrg = { ...record, organizationId: orgId };
-    state.compliance = [...(state.compliance || []), withOrg];
-    saveFallbackState(state);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
 
-    if (!db) return;
-    try {
-      await db.insert(complianceRecords).values({
-        id: record.id,
+    const recordId = record.id || `inspect-${Math.random().toString(36).substring(2, 9)}`;
+
+    const existing = await database.select().from(complianceRecords).where(and(eq(complianceRecords.id, recordId), eq(complianceRecords.organizationId, orgId)));
+    if (existing.length > 0) {
+      await database.update(complianceRecords)
+        .set({
+          propertyName: record.propertyName,
+          inspector: record.inspector,
+          date: record.date,
+          score: record.score,
+          status: record.status,
+          notes: record.notes,
+          checklist: record.checklist
+        })
+        .where(and(eq(complianceRecords.id, recordId), eq(complianceRecords.organizationId, orgId)));
+    } else {
+      await database.insert(complianceRecords).values({
+        id: recordId,
         propertyName: record.propertyName,
         inspector: record.inspector,
         date: record.date,
@@ -660,64 +659,118 @@ export const dbClient = {
         checklist: record.checklist,
         organizationId: orgId
       });
-    } catch (err) {
-      console.warn("DB addComplianceRecord failed", err);
     }
   },
 
+  async updateComplianceRecord(id: string, updatedFields: Partial<any>, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
+
+    const condition = and(eq(complianceRecords.id, id), eq(complianceRecords.organizationId, orgId));
+    await database.update(complianceRecords)
+      .set({
+        propertyName: updatedFields.propertyName,
+        inspector: updatedFields.inspector,
+        date: updatedFields.date,
+        score: updatedFields.score,
+        status: updatedFields.status,
+        notes: updatedFields.notes,
+        checklist: updatedFields.checklist
+      })
+      .where(condition);
+  },
+
+  async deleteComplianceRecord(id: string, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    const condition = and(eq(complianceRecords.id, id), eq(complianceRecords.organizationId, orgId));
+    await database.delete(complianceRecords).where(condition);
+  },
+
+  // === Work Orders Operations ===
   async getWorkOrders(organizationId?: string): Promise<any[]> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    if (!db) {
-      const state = getFallbackState();
-      const orders = state.workOrders || [];
-      orders.forEach(o => {
-        if (!(o as any).organizationId) (o as any).organizationId = "00000000-0000-0000-0000-000000000000";
-      });
-      return orders.filter(o => (o as any).organizationId === orgId);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
-    try {
-      const rows = await db.select().from(workOrders).where(eq(workOrders.organizationId, orgId));
-      return rows.map(r => ({
-        id: r.id,
-        title: r.title,
-        description: r.description || "",
-        status: r.status,
-        priority: r.priority,
-        assignedTo: r.assignedTo || "",
-        complianceRecordId: r.complianceRecordId || "",
-        dueDate: r.dueDate || "",
-        createdAt: r.createdAt ? r.createdAt.toISOString() : undefined,
-        organizationId: r.organizationId || undefined
-      }));
-    } catch (err) {
-      console.warn("DB getWorkOrders failed, falling back", err);
-      const orders = getFallbackState().workOrders || [];
-      return orders.filter(o => !(o as any).organizationId || (o as any).organizationId === orgId);
-    }
+    await ensureOrgExists(orgId);
+
+    const rows = await database.select().from(workOrders).where(eq(workOrders.organizationId, orgId));
+    return rows.map(r => ({
+      id: r.id,
+      title: r.title,
+      description: r.description || "",
+      status: r.status,
+      priority: r.priority,
+      assignedTo: r.assignedTo || "",
+      complianceRecordId: r.complianceRecordId || "",
+      dueDate: r.dueDate || "",
+      createdAt: r.createdAt ? r.createdAt.toISOString() : undefined,
+      organizationId: r.organizationId || undefined
+    }));
   },
 
   async addWorkOrder(order: any, organizationId?: string): Promise<void> {
-    const orgId = organizationId || (await getOrganizationId()) || "00000000-0000-0000-0000-000000000000";
-    const state = getFallbackState();
-    const withOrg = { ...order, organizationId: orgId };
-    state.workOrders = [...(state.workOrders || []), withOrg];
-    saveFallbackState(state);
-
-    if (!db) return;
-    try {
-      await db.insert(workOrders).values({
-        id: order.id && order.id.includes("-") ? order.id : undefined, // Will use db auto uuid if invalid format
-        title: order.title,
-        description: order.description,
-        status: order.status || "pending",
-        priority: order.priority || "medium",
-        assignedTo: order.assignedTo,
-        complianceRecordId: order.complianceRecordId,
-        dueDate: order.dueDate,
-        organizationId: orgId
-      });
-    } catch (err) {
-      console.warn("DB addWorkOrder failed", err);
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
     }
+    await ensureOrgExists(orgId);
+
+    const orderId = order.id && order.id.includes("-") ? order.id : undefined;
+
+    await database.insert(workOrders).values({
+      id: orderId,
+      title: order.title,
+      description: order.description,
+      status: order.status || "pending",
+      priority: order.priority || "medium",
+      assignedTo: order.assignedTo,
+      complianceRecordId: order.complianceRecordId,
+      dueDate: order.dueDate,
+      organizationId: orgId
+    });
+  },
+
+  async updateWorkOrder(id: string, updatedFields: Partial<any>, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    await ensureOrgExists(orgId);
+
+    // uuid PK
+    const condition = and(eq(workOrders.id, id), eq(workOrders.organizationId, orgId));
+    await database.update(workOrders)
+      .set({
+        title: updatedFields.title,
+        description: updatedFields.description,
+        status: updatedFields.status,
+        priority: updatedFields.priority,
+        assignedTo: updatedFields.assignedTo,
+        complianceRecordId: updatedFields.complianceRecordId,
+        dueDate: updatedFields.dueDate
+      })
+      .where(condition);
+  },
+
+  async deleteWorkOrder(id: string, organizationId?: string): Promise<void> {
+    const database = getDb();
+    const orgId = organizationId || (await getOrganizationId());
+    if (!orgId) {
+      throw new Error("No organization context available for this operation.");
+    }
+    const condition = and(eq(workOrders.id, id), eq(workOrders.organizationId, orgId));
+    await database.delete(workOrders).where(condition);
   }
 };

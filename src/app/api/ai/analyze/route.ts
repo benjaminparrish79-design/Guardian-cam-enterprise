@@ -3,8 +3,11 @@ import { getGeminiClient } from "../../../../lib/gemini";
 import { Type } from "@google/genai";
 import { db } from "../../../../db";
 import { aiEvents, alerts as dbAlerts } from "../../../../db/schema";
-import { aiAnalyzeSchema } from "@/lib/validations";
+import { aiAnalyzeSchema, validateAIPrompt } from "@/lib/validations";
 import { rateLimit } from "@/lib/rate-limit";
+import { requireRole } from "@/lib/supabase-server";
+
+export const dynamic = "force-dynamic";
 
 // Simulated threat scenarios for demo fallback mode
 const MOCK_REPORTS: Record<string, any> = {
@@ -57,6 +60,12 @@ export async function POST(req: Request) {
       );
     }
 
+    const ctx = await requireRole("admin", "operator", "inspector");
+    if (!ctx) {
+      return NextResponse.json({ error: "Forbidden", message: "Adequate privilege role required." }, { status: 403 });
+    }
+    const orgId = ctx.organizationId;
+
     const jsonBody = await req.json();
 
     // Input Validation
@@ -66,7 +75,15 @@ export async function POST(req: Request) {
     }
 
     const { image, prompt, model, selectedDevice, selectedDeviceName } = validation.data;
+
+    // Safety check on AI prompt to prevent injection and abuse
+    const promptCheck = validateAIPrompt(prompt);
+    if (!promptCheck.success) {
+      return NextResponse.json({ error: promptCheck.error }, { status: 400 });
+    }
+
     let finalReport: any = null;
+    let simulated = false;
 
     try {
       const ai = getGeminiClient();
@@ -82,8 +99,21 @@ export async function POST(req: Request) {
           base64Data = matches[2];
         }
       } else if (image && image.startsWith("http")) {
-        // Fetch public Unsplash images to convert to base64 for Gemini
-        const imgFetch = await fetch(image);
+        // Only ever fetch from the known demo-image host. Never fetch an
+        // arbitrary client-supplied URL server-side — that would let a
+        // caller make this server issue requests to internal/private
+        // addresses (SSRF).
+        let parsed: URL;
+        try {
+          parsed = new URL(image);
+        } catch {
+          throw new Error("Invalid image URL.");
+        }
+        const allowedHosts = ["images.unsplash.com"];
+        if (parsed.protocol !== "https:" || !allowedHosts.includes(parsed.hostname)) {
+          throw new Error("Image URL host is not allowed.");
+        }
+        const imgFetch = await fetch(parsed.toString());
         const arrayBuffer = await imgFetch.arrayBuffer();
         base64Data = Buffer.from(arrayBuffer).toString("base64");
         mimeType = imgFetch.headers.get("content-type") || "image/jpeg";
@@ -160,6 +190,7 @@ Analyze the provided camera frame. Determine the threatLevel ('low', 'medium', '
       }
 
       finalReport = selectedScenario;
+      simulated = true;
     }
 
     // Database logging flow (creates ai_events and alerts in PostgreSQL if database is active)
@@ -176,20 +207,24 @@ Analyze the provided camera frame. Determine the threatLevel ('low', 'medium', '
           description: finalReport.description || "Ingestion complete.",
           objectsDetected: finalReport.objectsDetected || [],
           boundingBoxes: finalReport.boundingBoxes || [],
+          simulated,
+          organizationId: orgId,
         });
 
         // Log to security Alerts table if severity is elevated
         if (finalReport.threatLevel && ["medium", "high", "critical"].includes(finalReport.threatLevel)) {
           await db.insert(dbAlerts).values({
-            id: `alert-${Math.floor(Math.random() * 900000) + 100000}`,
+            id: `alert-${crypto.randomUUID()}`,
             deviceId: deviceIdVal,
             deviceName: selectedDeviceName || "AI Scanner Stream",
             timestamp: new Date().toLocaleTimeString(),
             severity: finalReport.threatLevel,
-            message: finalReport.recommendation || "AI Threat Flagged",
+            message: simulated ? `[SIMULATED] ${finalReport.recommendation || "AI Threat Flagged"}` : (finalReport.recommendation || "AI Threat Flagged"),
             description: finalReport.description || "Thermal profile signature mismatch.",
             objectsDetected: finalReport.objectsDetected || [],
             resolved: false,
+            simulated,
+            organizationId: orgId,
           });
         }
         console.log("Drizzle database transaction succeeded: logged ai_event/alert.");
@@ -198,7 +233,7 @@ Analyze the provided camera frame. Determine the threatLevel ('low', 'medium', '
       }
     }
 
-    return NextResponse.json(finalReport);
+    return NextResponse.json({ ...finalReport, simulated });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }

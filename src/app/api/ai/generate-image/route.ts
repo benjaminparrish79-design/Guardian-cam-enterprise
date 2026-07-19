@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { getGeminiClient } from "../../../../lib/gemini";
-import { generateImageSchema } from "@/lib/validations";
+import { generateImageSchema, validateAIPrompt } from "@/lib/validations";
 import { rateLimit } from "@/lib/rate-limit";
+import { requireRole } from "@/lib/supabase-server";
+
+export const dynamic = "force-dynamic";
 
 // Visual simulation placeholders for demo fallback mode
 const MOCK_SCENARIOS = [
@@ -30,6 +33,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Rate limit exceeded" }, { status: 429 });
     }
 
+    const ctx = await requireRole("admin", "operator");
+    if (!ctx) {
+      return NextResponse.json({ error: "Forbidden", message: "Adequate privilege role required." }, { status: 403 });
+    }
+    const orgId = ctx.organizationId;
+
     const jsonBody = await req.json();
 
     // Input Validation
@@ -40,40 +49,38 @@ export async function POST(req: Request) {
 
     const { prompt, aspectRatio, imageSize } = validated.data;
 
+    // Safety check on AI prompt to prevent injection and abuse
+    const promptCheck = validateAIPrompt(prompt);
+    if (!promptCheck.success) {
+      return NextResponse.json({ error: promptCheck.error }, { status: 400 });
+    }
+
     try {
       const ai = getGeminiClient();
       
       // Determine standard aspect ratio strings
-      const ratio = aspectRatio || "16:9";
-      const size = imageSize || "1K";
-      const selectedModel = "gemini-3.1-flash-image"; // Safe high-quality model alias
+      const ratio = (aspectRatio || "16:9") as any;
+      const selectedModel = "imagen-3.0-generate-002";
       
-      const response = await ai.models.generateContent({
+      const response = await ai.models.generateImages({
         model: selectedModel,
-        contents: {
-          parts: [{ text: prompt || "A dark perimeter fence at night with thermal imaging" }]
-        },
+        prompt: prompt || "A dark perimeter fence at night with thermal imaging",
         config: {
-          imageConfig: {
-            aspectRatio: ratio,
-            imageSize: size
-          }
+          numberOfImages: 1,
+          aspectRatio: ratio,
+          outputMimeType: "image/jpeg",
         }
       });
 
-      const parts = response.candidates?.[0]?.content?.parts;
-      if (parts) {
-        for (const part of parts) {
-          if (part.inlineData) {
-            const base64EncodeString = part.inlineData.data;
-            return NextResponse.json({
-              imageUrl: `data:image/png;base64,${base64EncodeString}`
-            });
-          }
-        }
+      const base64Image = response.generatedImages?.[0]?.image?.imageBytes;
+      if (base64Image) {
+        return NextResponse.json({
+          imageUrl: `data:image/jpeg;base64,${base64Image}`,
+          simulated: false
+        });
       }
 
-      throw new Error("No image data returned from Gemini Vision model");
+      throw new Error("No image data returned from Imagen model");
     } catch (sdkError: any) {
       console.warn("Gemini Image API client unavailable. Falling back to simulation mode...", sdkError.message);
       
@@ -87,7 +94,7 @@ export async function POST(req: Request) {
         ? matched.url 
         : "https://images.unsplash.com/photo-1518770660439-4636190af475?auto=format&fit=crop&q=80&w=800&h=450"; // Generic tech/ops fallback
 
-      return NextResponse.json({ imageUrl });
+      return NextResponse.json({ imageUrl, simulated: true });
     }
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });
